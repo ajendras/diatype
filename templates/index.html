@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DiaType — Notebook</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&amp;family=Instrument+Serif:ital@0;1&amp;display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&amp;display=swap');
+
+        :root {
+            --ink: #5d4037;
+            --paper: #f9f4e9;
+        }
+
+        .notebook {
+            background: #f9f4e9;
+            background-image:
+                linear-gradient(#e5d9c0 1px, transparent 0),
+                linear-gradient(90deg, #e5d9c0 1px, transparent 0);
+            background-size: 100% 28px, 28px 100%;
+            box-shadow: 8px 12px 0 #3f2a21,
+                        0 0 0 16px #5d4037;
+            border-radius: 8px 28px 12px 24px;
+        }
+
+        .wobbly-border {
+            border: 3px solid #5d4037;
+            border-radius: 12px 28px 18px 8px;
+            box-shadow: 4px 6px 0 #5d4037;
+        }
+
+        .sticky-note {
+            background: #fefce8;
+            box-shadow: 4px 5px 0 #5d4037;
+            transform: rotate(-3deg);
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .sticky-note:hover {
+            transform: rotate(2deg) scale(1.05);
+            box-shadow: 6px 8px 0 #5d4037;
+        }
+
+        .sticky-note:nth-child(2) { transform: rotate(4deg); }
+        .sticky-note:nth-child(3) { transform: rotate(-5deg); }
+        .sticky-note:nth-child(4) { transform: rotate(3deg); }
+
+        .highlighter {
+            position: relative;
+            display: inline-block;
+        }
+
+        .highlighter::after {
+            content: '';
+            position: absolute;
+            left: -4px;
+            right: -4px;
+            top: 4px;
+            bottom: 2px;
+            background: #fef08c;
+            transform: rotate(-2deg);
+            z-index: -1;
+            border-radius: 2px;
+        }
+
+        .caveat {
+            font-family: 'Caveat', cursive;
+        }
+
+        .mermaid-container svg {
+            max-height: 520px;
+            filter: drop-shadow(0 10px 8px rgb(93 64 55 / 0.1));
+        }
+
+        .paper-line {
+            position: relative;
+        }
+
+        .paper-line::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            background: repeating-linear-gradient(
+                to bottom,
+                transparent 0px,
+                transparent 26px,
+                #e5d9c0 27px
+            );
+            pointer-events: none;
+            z-index: 0;
+            opacity: 0.6;
+        }
+    </style>
+</head>
+<body class="bg-[#5d4037] py-8 text-[#5d4037]">
+    <div class="max-w-[1180px] mx-auto px-6">
+        <!-- header -->
+        <div class="flex items-end justify-between mb-6 px-4">
+            <div class="flex items-center gap-x-4">
+                <div class="text-6xl drop-shadow-md">📓</div>
+                <div>
+                    <h1 class="caveat text-[4.8rem] leading-[0.8] font-semibold tracking-tighter text-[#f9f4e9] highlighter">DiaType</h1>
+                    <p class="text-[#f9f4e9]/70 text-xl pl-2 -mt-3">local • sketchy • AI</p>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-x-6 text-[#f9f4e9]">
+                <div class="flex items-center gap-x-2 bg-[#f9f4e9] text-[#5d4037] px-5 h-9 rounded-3xl text-sm font-medium shadow-inner">
+                    <div class="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
+                    <span id="model-name" class="tabular-nums"></span>
+                </div>
+                <button onclick="newNotebook()" 
+                        class="flex items-center gap-x-2 bg-white/10 hover:bg-white/20 transition-colors px-6 py-2 rounded-3xl text-sm border border-[#f9f4e9]/30">
+                    <span class="text-xl leading-none mt-px">⟳</span>
+                    <span>New page</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="notebook flex overflow-hidden shadow-2xl">
+            <!-- sidebar: gallery -->
+            <div class="w-72 bg-[#f0e6d2] p-8 border-r-4 border-[#5d4037]">
+                <h2 class="caveat text-5xl mb-8 text-center tracking-tight">Templates</h2>
+                
+                <div onclick="loadExample(0)" class="sticky-note cursor-pointer p-5 mb-10 mx-auto w-44">
+                    <div class="uppercase text-[10px] tracking-[0.5px] text-amber-800 mb-1">flowchart</div>
+                    <div class="text-xl leading-tight font-medium">User login flow</div>
+                    <div class="text-xs text-amber-700 mt-6">authentication • database</div>
+                </div>
+
+                <div onclick="loadExample(1)" class="sticky-note cursor-pointer p-5 mb-10 mx-auto w-44">
+                    <div class="uppercase text-[10px] tracking-[0.5px] text-amber-800 mb-1">architecture</div>
+                    <div class="text-xl leading-tight font-medium">Microservices</div>
+                    <div class="text-xs text-amber-700 mt-6">API gateway • services</div>
+                </div>
+
+                <div onclick="loadExample(2)" class="sticky-note cursor-pointer p-5 mb-10 mx-auto w-44">
+                    <div class="uppercase text-[10px] tracking-[0.5px] text-amber-800 mb-1">sequence</div>
+                    <div class="text-xl leading-tight font-medium">Checkout flow</div>
+                    <div class="text-xs text-amber-700 mt-6">customer • payment</div>
+                </div>
+
+                <div onclick="loadExample(3)" class="sticky-note cursor-pointer p-5 mx-auto w-44">
+                    <div class="uppercase text-[10px] tracking-[0.5px] text-amber-800 mb-1">class</div>
+                    <div class="text-xl leading-tight font-medium">Blog model</div>
+                    <div class="text-xs text-amber-700 mt-6">Post • Comment • User</div>
+                </div>
+            </div>
+
+            <!-- main notebook area -->
+            <div class="flex-1 p-10 paper-line">
+                <!-- prompt -->
+                <div class="mb-12">
+                    <div class="flex justify-between items-baseline mb-4">
+                        <h2 class="caveat text-5xl highlighter px-1">Describe your diagram…</h2>
+                        <select id="type-select" 
+                                class="bg-white border-2 border-[#5d4037] rounded-2xl px-5 py-2 text-sm font-medium focus:outline-none">
+                            <option value="flowchart">flowchart</option>
+                            <option value="sequenceDiagram">sequenceDiagram</option>
+                            <option value="classDiagram">classDiagram</option>
+                            <option value="stateDiagram">stateDiagram</option>
+                            <option value="mindmap">mindmap</option>
+                        </select>
+                    </div>
+                    
+                    <textarea id="prompt-input" rows="4"
+                        class="w-full resize-y bg-white border-2 border-[#5d4037] rounded-3xl p-8 text-lg leading-relaxed focus:outline-none focus:border-[#f59e0b] transition-colors"
+                        placeholder="A user signs up, verifies their email, logs in and sees a personalised dashboard..."></textarea>
+                    
+                    <div class="flex gap-3 mt-6">
+                        <button onclick="handleGenerate()"
+                            class="flex-1 py-6 text-2xl font-medium bg-[#5d4037] hover:bg-[#3f2a21] text-[#f9f4e9] rounded-3xl shadow-inner active:scale-[0.985] transition-all border-b-4 border-[#3f2a21]">
+                            Generate with Ollama ✨
+                        </button>
+                        
+                        <button onclick="toggleCodeEditor()"
+                            class="px-8 border-2 border-[#5d4037] rounded-3xl text-xl hover:bg-amber-100 transition-colors">
+                            ✏️
+                        </button>
+                    </div>
+                </div>
+
+                <!-- preview area -->
+                <div class="mb-8">
+                    <div class="flex items-center justify-between mb-4 px-1">
+                        <h2 class="caveat text-4xl">Live Preview</h2>
+                        <div class="flex items-center gap-x-2 text-xs uppercase tracking-widest">
+                            <div onclick="explainCurrent()" 
+                                 class="cursor-pointer px-4 py-2 bg-white border border-[#5d4037] rounded-3xl hover:bg-[#fefce8]">
+                                explain
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="mermaid-container"
+                         class="mermaid-container bg-white wobbly-border p-8 min-h-[460px] flex items-center justify-center overflow-auto">
+                        <div id="mermaid-placeholder" 
+                             class="text-center max-w-xs text-[#5d4037]/30 italic">
+                            Your Mermaid diagram will appear here after the first generation.<br><br>
+                            <span class="block text-xs text-amber-800">Everything runs locally with Ollama</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- explanation -->
+                <div id="explanation-card" 
+                     class="hidden bg-[#fefce8] border-2 border-[#5d4037] rounded-3xl p-8 mb-8">
+                    <div class="flex items-center gap-x-3 mb-4">
+                        <span class="text-4xl">💡</span>
+                        <h3 class="caveat text-4xl">Explanation</h3>
+                    </div>
+                    <p id="explanation-text" class="text-[#5d4037] leading-relaxed text-[15.2px]">
+                    </p>
+                </div>
+
+                <!-- refinement -->
+                <div class="bg-white border-2 border-[#5d4037] rounded-3xl p-7 max-w-md">
+                    <div class="uppercase text-amber-800 text-xs tracking-widest mb-3 flex items-center gap-x-2">
+                        <span class="block w-6 h-px bg-amber-800"></span>
+                        Tell the AI what to change
+                    </div>
+                    <textarea id="refine-input" rows="2"
+                        class="w-full border border-dashed border-[#5d4037] rounded-2xl p-5 text-sm focus:outline-none"
+                        placeholder="Add a database lookup step. Make the layout left-to-right..."></textarea>
+                    <button onclick="handleRefine()"
+                        class="mt-5 w-full py-5 text-lg font-medium bg-[#fef08c] hover:bg-[#fde047] active:bg-amber-300 transition-colors border border-[#5d4037] rounded-3xl">
+                        Refine diagram
+                    </button>
+                </div>
+            </div>
+
+            <!-- right rail -->
+            <div class="w-60 bg-[#f0e6d2] p-7 border-l-4 border-[#5d4037] flex flex-col">
+                <div class="sticky-note p-6 mb-8">
+                    <h4 class="caveat text-3xl mb-5">Export</h4>
+                    <div onclick="exportAsSVG()" 
+                         class="cursor-pointer hover:bg-white transition-colors px-5 py-4 text-sm border-b border-[#5d4037]/30 flex items-center gap-x-3">
+                        <span class="text-xl">📐</span>
+                        <span>SVG vector</span>
+                    </div>
+                    <div onclick="copyMermaidToClipboard()" 
+                         class="cursor-pointer hover:bg-white transition-colors px-5 py-4 text-sm border-b border-[#5d4037]/30 flex items-center gap-x-3">
+                        <span class="text-xl">📋</span>
+                        <span>Mermaid code</span>
+                    </div>
+                    <div onclick="copyMarkdownToClipboard()" 
+                         class="cursor-pointer hover:bg-white transition-colors px-5 py-4 text-sm flex items-center gap-x-3">
+                        <span class="text-xl">📝</span>
+                        <span>Markdown block</span>
+                    </div>
+                </div>
+
+                <div class="mt-auto text-[10px] leading-tight opacity-60">
+                    All processing happens on your machine.<br>
+                    No data is sent to the cloud.<br><br>
+                    Powered by Ollama + Mermaid.js
+                </div>
+
+                <div onclick="window.location.reload()" 
+                     class="mt-12 text-xs flex items-center gap-x-2 text-[#5d4037]/60 hover:text-[#5d4037] cursor-pointer">
+                    <span class="text-base">⟲</span>
+                    <span class="uppercase tracking-widest">Fresh notebook</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- status bar -->
+        <div class="text-center text-[#f9f4e9]/40 text-xs mt-8 flex items-center justify-center gap-x-8">
+            <div>Hand-drawn notebook UI</div>
+            <div class="w-px h-3 bg-[#f9f4e9]/30"></div>
+            <div>Local LLM</div>
+            <div class="w-px h-3 bg-[#f9f4e9]/30"></div>
+            <div>Editable Mermaid</div>
+        </div>
+    </div>
+
+    <!-- code editor modal -->
+    <div onclick="if(event.target.id==='modal-backdrop') toggleCodeEditor()" id="modal-backdrop"
+         class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+        <div onclick="event.stopImmediatePropagation()" 
+             class="bg-[#f9f4e9] w-full max-w-2xl mx-4 rounded-3xl shadow-2xl overflow-hidden">
+            <div class="px-8 pt-6 pb-4 border-b flex items-center justify-between">
+                <div class="caveat text-4xl">Edit Mermaid</div>
+                <button onclick="toggleCodeEditor()" 
+                        class="text-4xl leading-none text-[#5d4037]/40 hover:text-[#5d4037]">×</button>
+            </div>
+            <textarea id="code-editor" spellcheck="false"
+                class="w-full font-mono text-sm p-8 bg-white h-96 focus:outline-none resize-none"></textarea>
+            <div class="px-8 py-6 bg-[#f0e6d2] flex justify-end gap-x-4">
+                <button onclick="toggleCodeEditor()" 
+                        class="px-10 py-4 border border-[#5d4037] rounded-2xl">Cancel</button>
+                <button onclick="applyEditedMermaid()" 
+                        class="px-10 py-4 bg-[#5d4037] text-[#f9f4e9] rounded-2xl">Render changes</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Tailwind script run
+        function initializeTailwind() {
+            // Already configured via CDN + custom CSS
+        }
+
+        // Mermaid config
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: "base",
+            flowchart: {
+                curve: "basis",
+                useMaxWidth: true
+            },
+            securityLevel: "loose",
+            themeVariables: {
+                primaryColor: "#f9f4e9",
+                primaryTextColor: "#5d4037",
+                primaryBorderColor: "#5d4037",
+                lineColor: "#5d4037",
+                secondaryColor: "#fefce8",
+                tertiaryColor: "#f59e0b"
+            }
+        });
+
+        let currentDiagram = {
+            mermaid: "",
+            explanation: "",
+            diagram_type: "flowchart",
+            svg: ""
+        };
+
+        let isEditorOpen = false;
+
+        function renderCurrentDiagram() {
+            const container = document.getElementById("mermaid-container");
+            const placeholder = document.getElementById("mermaid-placeholder");
+            
+            if (!currentDiagram.mermaid || currentDiagram.mermaid.trim() === "") {
+                placeholder.style.display = "block";
+                return;
+            }
+            
+            placeholder.style.display = "none";
+            
+            // Clear previous content
+            const existing = container.querySelector(".mermaid");
+            if (existing) existing.remove();
+            
+            // Create fresh mermaid element
+            const mermaidDiv = document.createElement("div");
+            mermaidDiv.className = "mermaid w-full flex justify-center";
+            mermaidDiv.style.maxWidth = "780px";
+            mermaidDiv.innerHTML = `<pre class="text-left text-xs p-4 bg-white/70 rounded-2xl border border-[#5d4037]/10">${currentDiagram.mermaid}</pre>`;
+            container.appendChild(mermaidDiv);
+            
+            // Render with Mermaid
+            setTimeout(() => {
+                try {
+                    mermaid.run({
+                        nodes: [mermaidDiv]
+                    });
+                } catch (err) {
+                    console.warn("Mermaid render warning:", err);
+                    // Fallback: show raw source
+                    mermaidDiv.innerHTML = `
+                        <div class="p-8 border border-dashed border-amber-400 bg-amber-50 rounded-3xl max-w-md">
+                            <div class="font-mono text-xs whitespace-pre-wrap text-amber-900">${currentDiagram.mermaid}</div>
+                        </div>`;
+                }
+            }, 10);
+        }
+
+        async function handleGenerate() {
+            const promptField = document.getElementById("prompt-input");
+            const prompt = promptField.value.trim();
+            
+            if (!prompt || prompt.length < 8) {
+                promptField.classList.add("!border-red-400");
+                setTimeout(() => promptField.classList.remove("!border-red-400"), 1200);
+                return;
+            }
+            
+            const type = document.getElementById("type-select").value;
+            const container = document.getElementById("mermaid-container");
+            
+            // Show loading state
+            const placeholder = document.getElementById("mermaid-placeholder");
+            placeholder.innerHTML = `
+                <div class="flex flex-col items-center gap-y-4">
+                    <div class="w-5 h-5 border-2 border-[#5d4037] border-t-transparent animate-spin rounded-full"></div>
+                    <div class="text-[#5d4037]/70 text-sm">Asking local LLM (llama3.2)...</div>
+                    <div class="text-[10px] text-[#5d4037]/40">this can take 8–25 seconds</div>
+                </div>`;
+            placeholder.style.display = "flex";
+            
+            try {
+                const response = await fetch("/api/generate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        prompt: prompt,
+                        diagram_type: type
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error("Generation failed");
+                }
+                
+                currentDiagram = await response.json();
+                document.getElementById("explanation-text").textContent = currentDiagram.explanation || "No explanation provided.";
+                document.getElementById("explanation-card").classList.remove("hidden");
+                document.getElementById("model-name").textContent = "llama3.2";
+                
+                renderCurrentDiagram();
+            } catch (err) {
+                console.error(err);
+                placeholder.innerHTML = `
+                    <div class="text-red-600 text-center">
+                        Could not reach Ollama.<br>
+                        <span class="text-xs">Is the Ollama server running?</span>
+                    </div>`;
+            }
+        }
+
+        async function handleRefine() {
+            const instructionField = document.getElementById("refine-input");
+            const instruction = instructionField.value.trim();
+            
+            if (!instruction || !currentDiagram.mermaid) {
+                return;
+            }
+            
+            const container = document.getElementById("mermaid-container");
+            const originalHTML = container.innerHTML;
+            
+            container.innerHTML = `
+                <div class="flex flex-col items-center gap-y-3 py-12">
+                    <div class="w-5 h-5 border-2 border-[#5d4037] border-t-transparent animate-spin rounded-full"></div>
+                    <div class="text-sm text-[#5d4037]">Refining diagram...</div>
+                </div>`;
+            
+            try {
+                const response = await fetch("/api/refine", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        ...currentDiagram,
+                        instruction: instruction
+                    })
+                });
+                
+                if (!response.ok) throw new Error(await response.text());
+                
+                currentDiagram = await response.json();
+                document.getElementById("explanation-text").textContent = currentDiagram.explanation || "Refined.";
+                renderCurrentDiagram();
+                instructionField.value = "";
+            } catch (err) {
+                console.error(err);
+                container.innerHTML = originalHTML;
+                alert("Refinement failed. Please try again.");
+            }
+        }
+
+        async function explainCurrent() {
+            if (!currentDiagram.mermaid) return;
+            
+            try {
+                const response = await fetch("/api/explain", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(currentDiagram)
+                });
+                const data = await response.json();
+                const explCard = document.getElementById("explanation-card");
+                document.getElementById("explanation-text").innerHTML = `<strong>AI says:</strong><br>${data.explanation}`;
+                explCard.classList.remove("hidden");
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        function loadExample(n) {
+            const examples = [
+                "A user signs up with email verification, logs into a dashboard, views their profile and can update settings stored in a database.",
+                "High-level microservices architecture with an API gateway, authentication service, user service, payment processor and a shared PostgreSQL database.",
+                "Sequence diagram showing a customer adding an item to cart, checking out, the frontend calling the order service which talks to payment and inventory services.",
+                "Class diagram for a blogging platform showing User, Post, Comment, Tag classes with appropriate associations and inheritance."
+            ];
+            
+            document.getElementById("prompt-input").value = examples[n];
+            // Auto-generate after a tiny delay so user sees the example
+            setTimeout(() => {
+                handleGenerate();
+            }, 180);
+        }
+
+        function toggleCodeEditor() {
+            const modal = document.getElementById("modal-backdrop");
+            const editor = document.getElementById("code-editor");
+            
+            if (!isEditorOpen) {
+                if (currentDiagram.mermaid) {
+                    editor.value = currentDiagram.mermaid;
+                }
+                modal.classList.remove("hidden");
+                modal.classList.add("flex");
+                editor.focus();
+            } else {
+                modal.classList.add("hidden");
+                modal.classList.remove("flex");
+            }
+            
+            isEditorOpen = !isEditorOpen;
+        }
+
+        function applyEditedMermaid() {
+            const editor = document.getElementById("code-editor");
+            const edited = editor.value.trim();
+            
+            if (edited && edited.length > 10) {
+                currentDiagram.mermaid = edited;
+                renderCurrentDiagram();
+            }
+            
+            toggleCodeEditor();
+        }
+
+        function exportAsSVG() {
+            const svg = document.querySelector("#mermaid-container svg");
+            if (!svg) {
+                alert("Generate a diagram first!");
+                return;
+            }
+            
+            const serializer = new XMLSerializer();
+            let source = serializer.serializeToString(svg);
+            
+            // Make SVG standalone
+            if (!source.startsWith("<?xml")) {
+                source = '<?xml version="1.0" standalone="no"?>\n' + 
+                         '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n' +
+                         source;
+            }
+            
+            const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(source);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "diatype-diagram.svg";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            showToast("SVG downloaded");
+        }
+
+        function copyMermaidToClipboard() {
+            if (!currentDiagram.mermaid) return;
+            navigator.clipboard.writeText(currentDiagram.mermaid).then(() => {
+                showToast("Mermaid code copied");
+            });
+        }
+
+        function copyMarkdownToClipboard() {
+            if (!currentDiagram.mermaid) return;
+            const md = "```mermaid\n" + currentDiagram.mermaid + "\n```";
+            navigator.clipboard.writeText(md).then(() => {
+                showToast("Markdown copied to clipboard");
+            });
+        }
+
+        function showToast(message) {
+            const toast = document.createElement("div");
+            toast.style.cssText = `
+                position: fixed; 
+                bottom: 30px; 
+                left: 50%; 
+                transform: translateX(-50%);
+                background: #5d4037; 
+                color: #f9f4e9; 
+                padding: 14px 28px; 
+                border-radius: 9999px; 
+                box-shadow: 5px 10px 15px -5px rgb(93 64 55);
+                z-index: 99999;
+                font-size: 13px;
+                white-space: nowrap;
+            `;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.transition = "all 0.3s cubic-bezier(0.4, 0, 1, 1)";
+                toast.style.opacity = "0";
+                toast.style.transform = "translate(-50%, 20px)";
+                setTimeout(() => toast.remove(), 300);
+            }, 2200);
+        }
+
+        function newNotebook() {
+            if (confirm("Clear everything and start a fresh notebook?")) {
+                window.location.reload();
+            }
+        }
+
+        // Keyboard shortcuts
+        function handleKeyboard(e) {
+            if (e.metaKey && e.key === "Enter") {
+                if (!document.getElementById("modal-backdrop").classList.contains("hidden")) {
+                    applyEditedMermaid();
+                } else {
+                    handleGenerate();
+                }
+            }
+            
+            if (e.key === "Escape") {
+                const modal = document.getElementById("modal-backdrop");
+                if (!modal.classList.contains("hidden")) {
+                    toggleCodeEditor();
+                }
+            }
+        }
+
+        // Boot the app
+        function initializeApp() {
+            // Tailwind ready
+            initializeTailwind();
+            
+            // Show model name
+            const modelEl = document.getElementById("model-name");
+            modelEl.textContent = "llama3.2";
+            
+            // Demo prompt
+            setTimeout(() => {
+                const promptArea = document.getElementById("prompt-input");
+                promptArea.value = "Simple CI pipeline that builds, tests and deploys a web app on every push to main";
+            }, 420);
+            
+            // Keyboard listener
+            document.addEventListener("keydown", handleKeyboard);
+            
+            // Make placeholder clickable to trigger example
+            const placeholder = document.getElementById("mermaid-placeholder");
+            placeholder.style.cursor = "pointer";
+            placeholder.addEventListener("click", () => {
+                if (!currentDiagram.mermaid) {
+                    loadExample(0);
+                }
+            });
+            
+            // Make the whole notebook feel a bit more paper-like with a tiny tilt on load
+            console.log('%cDiaType ready. Everything is running locally.', 'font-family:Caveat;font-size:13px;color:#5d4037');
+        }
+        
+        window.onload = initializeApp;
+    </script>
+</body>
+</html>

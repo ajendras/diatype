@@ -1,0 +1,126 @@
+"""FastAPI application for the DiaType notebook interface.
+
+Serves the hand-drawn UI, provides JSON endpoints for generation and refinement,
+and mounts static assets (CSS, JS, fonts).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
+
+from .config import Settings
+from .generator import DiagramEngine
+from .models import Diagram, DiagramRequest
+
+app = FastAPI(
+    title="DiaType",
+    version="0.1.0",
+    description="Hand-drawn notebook for turning natural language into Mermaid diagrams — 100% local.",
+)
+
+# Mount static files (CSS, JS, fonts)
+static_dir = Path(__file__).parent.parent / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+templates = Jinja2Templates(directory="templates")
+
+
+def get_engine() -> DiagramEngine:
+    """Return a singleton DiagramEngine (lazy initialisation)."""
+    if not hasattr(get_engine, "_engine"):
+        get_engine._engine = DiagramEngine(Settings.load())  # type: ignore[attr-defined]
+    return get_engine._engine  # type: ignore[attr-defined]
+
+
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request) -> HTMLResponse:
+    """Render the hand-drawn notebook interface."""
+    settings = Settings.load()
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "ollama_model": settings.ollama_model,
+            "default_diagram_type": settings.default_diagram_type,
+        },
+    )
+
+
+@app.post("/api/generate", response_model=Diagram)
+async def api_generate(
+    req: DiagramRequest, engine: DiagramEngine = Depends(get_engine)
+) -> Diagram:
+    """Generate a new diagram from a natural language prompt.
+
+    All output is sanitised and validated before being returned.
+    """
+    try:
+        diagram = engine.generate(req.prompt, req.diagram_type)
+        return diagram
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/refine", response_model=Diagram)
+async def api_refine(
+    request: Request, engine: DiagramEngine = Depends(get_engine)
+) -> Diagram:
+    """Refine an existing diagram based on a natural-language instruction.
+
+    Accepts a JSON payload containing a full Diagram plus an 'instruction' key.
+    """
+    try:
+        payload = await request.json()
+        instruction: str = payload.pop("instruction", "").strip()
+
+        if len(instruction) < 3:
+            raise ValueError("instruction must be at least 3 characters")
+
+        diagram = Diagram(
+            mermaid=payload.get("mermaid", ""),
+            explanation=payload.get("explanation", ""),
+            svg=payload.get("svg", ""),
+            diagram_type=payload.get("diagram_type", "flowchart"),
+        )
+
+        refined = engine.refine(diagram, instruction)
+        return refined
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Refinement failed: {exc}") from exc
+
+
+@app.post("/api/explain")
+async def api_explain(
+    request: Request, engine: DiagramEngine = Depends(get_engine)
+) -> dict[str, str]:
+    """Return a plain-English explanation of the supplied diagram."""
+    try:
+        payload = await request.json()
+        diagram = Diagram(
+            mermaid=payload.get("mermaid", ""),
+            explanation=payload.get("explanation", ""),
+            diagram_type=payload.get("diagram_type", "flowchart"),
+            svg=payload.get("svg", ""),
+        )
+        explanation = engine.explain(diagram)
+        return {"explanation": explanation}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    """Simple health check exposing the configured model."""
+    settings = Settings.load()
+    return {"status": "healthy", "model": settings.ollama_model}

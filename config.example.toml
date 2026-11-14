@@ -1,0 +1,26 @@
+# DiaType — Sample Configuration
+#
+# Copy this file to `config.toml` in the project root and customise.
+# The loader gracefully falls back to these exact defaults if the file
+# is missing or cannot be parsed.
+
+ollama_model = "llama3.2"
+temperature = 0.2
+default_diagram_type = "flowchart"
+max_tokens = 2500
+output_dir = "diagrams"
+
+# Preferred diagram types for the template gallery (future UI extension)
+preferred_types = [
+    "flowchart",
+    "sequenceDiagram",
+    "classDiagram",
+    "mindmap",
+    "erDiagram",
+    "c4Diagram",
+]
+
+# Example of section-based layout (also supported by the loader)
+# [diatype]
+# ollama_model = "phi3"
+# temperature = 0.1
