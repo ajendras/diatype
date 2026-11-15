@@ -211,6 +211,53 @@ async function explainDiagram() {
     }
 }
 
+async function exportExcalidraw() {
+    if (!currentDiagram.mermaid) {
+        alert("Generate a diagram first!");
+        return;
+    }
+    
+    const statusEl = document.getElementById('status');
+    if (statusEl) statusEl.textContent = 'Exporting Excalidraw JSON...';
+    
+    try {
+        const response = await fetch('/api/excalidraw', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(currentDiagram)
+        });
+        
+        if (!response.ok) throw new Error('Export failed');
+        
+        const exData = await response.json();
+        
+        const blob = new Blob([JSON.stringify(exData, null, 2)], {
+            type: 'application/json'
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `diagram-${currentDiagram.diagram_type || 'flowchart'}.excalidraw`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        if (statusEl) {
+            statusEl.innerHTML = `
+                <span class="inline-block w-3 h-3 bg-violet-500 rounded-full"></span>
+                Excalidraw JSON saved (sketchy style)
+            `;
+        }
+    } catch (err) {
+        console.error(err);
+        if (statusEl) {
+            statusEl.textContent = 'Export error: ' + err.message;
+            statusEl.className = 'status error';
+        }
+    }
+}
+
 function exportSVG() {
     if (!currentDiagram.svg) {
         alert("No diagram to export yet.");
@@ -346,6 +393,9 @@ function initializeUI() {
     const exportPngBtn = document.getElementById('export-png');
     if (exportPngBtn) exportPngBtn.addEventListener('click', exportPNG);
     
+    const exportExBtn = document.getElementById('export-excalidraw');
+    if (exportExBtn) exportExBtn.addEventListener('click', exportExcalidraw);
+    
     const copyBtn = document.getElementById('copy-md');
     if (copyBtn) copyBtn.addEventListener('click', copyMarkdown);
     
@@ -423,5 +473,6 @@ window.retryLastPrompt = function() {
 
 window.exportSVG = exportSVG;
 window.exportPNG = exportPNG;
+window.exportExcalidraw = exportExcalidraw;
 window.copyMarkdown = copyMarkdown;
 window.explainDiagram = explainDiagram;

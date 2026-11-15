@@ -7,6 +7,7 @@ and mounts static assets (CSS, JS, fonts).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -20,7 +21,7 @@ from .models import Diagram, DiagramRequest
 
 app = FastAPI(
     title="DiaType",
-    version="0.1.0",
+    version="0.2.0",
     description="Hand-drawn notebook for turning natural language into Mermaid diagrams — 100% local.",
 )
 
@@ -117,6 +118,26 @@ async def api_explain(
         return {"explanation": explanation}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/excalidraw")
+async def api_excalidraw(request: Request) -> dict[str, Any]:
+    """Return Excalidraw v2 JSON with sketchy hand-drawn styling.
+
+    Accepts a Diagram payload and returns a scene that can be imported
+    directly into Excalidraw (Virgil font, roughness=2, slight angles).
+    """
+    try:
+        payload = await request.json()
+        diagram = Diagram(
+            mermaid=payload.get("mermaid", ""),
+            explanation=payload.get("explanation", ""),
+            diagram_type=payload.get("diagram_type", "flowchart"),
+            svg=payload.get("svg", ""),
+        )
+        return diagram.to_excalidraw()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Excalidraw export failed: {exc}") from exc
 
 
 @app.get("/health")

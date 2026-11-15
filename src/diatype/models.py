@@ -7,6 +7,7 @@ through the system.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -147,6 +148,269 @@ class Diagram(BaseModel):
     def to_markdown(self) -> str:
         """Return a Markdown code block suitable for embedding in docs."""
         return f"```mermaid\n{self.mermaid}\n```"
+
+    def to_excalidraw(self) -> dict[str, Any]:
+        """Return Excalidraw v2 scene JSON with sketchy hand-drawn styling.
+
+        Flowcharts are parsed into rectangles, text (Virgil fontFamily=3)
+        and arrows. All shapes use roughness=2 and slight angles for a
+        natural hand-drawn look. Other diagram types fall back to a large
+        text block.
+        """
+        elements: list[dict[str, Any]] = []
+
+        sketch_style = {
+            "strokeColor": "#5d4037",
+            "backgroundColor": "#fefce8",
+            "fillStyle": "solid",
+            "strokeWidth": 3,
+            "strokeStyle": "solid",
+            "roughness": 2,
+            "opacity": 100,
+            "roundness": {"type": 3},
+            "seed": 42,
+            "version": 1,
+            "versionNonce": 123456,
+            "isDeleted": False,
+            "boundElements": [],
+            "updated": 1725123456789,
+            "link": None,
+            "locked": False,
+            "groupIds": [],
+            "frameId": None,
+        }
+
+        if any(k in self.diagram_type.lower() for k in ("flowchart", "graph")):
+            elements.extend(self._flowchart_to_excalidraw(sketch_style))
+        else:
+            elements.append(self._fallback_text_element())
+
+        return {
+            "type": "excalidraw",
+            "version": 2,
+            "source": "https://github.com/ajendras/diatype",
+            "elements": elements,
+            "appState": {
+                "gridModeEnabled": False,
+                "viewBackgroundColor": "#f9f4e9",
+                "zenModeEnabled": True,
+                "theme": "light",
+            },
+            "files": {},
+        }
+
+    def _flowchart_to_excalidraw(self, base_style: dict[str, Any]) -> list[dict[str, Any]]:
+        """Simple regex-based parser for Mermaid flowcharts into Excalidraw elements."""
+        elements: list[dict[str, Any]] = []
+
+        # Extract nodes: ID[Label], ID(Label), ID{Label}
+        node_pattern = r"([A-Za-z0-9_]+)\s*([\[{\(])(.+?)([\]}\)])"
+        node_matches = re.findall(node_pattern, self.mermaid)
+        node_dict: dict[str, str] = {}
+        for node_id, _, label, _ in node_matches:
+            if node_id not in node_dict:
+                node_dict[node_id] = label.strip()[:35]
+
+        # Extract edges (supports --> |label| and similar)
+        edge_pattern = r"([A-Za-z0-9_]+)\s*(?:--+|==+)>[\|]?(.*?)[\|]?\s*([A-Za-z0-9_]+)"
+        edge_matches = re.findall(edge_pattern, self.mermaid)
+        edges = [(src, tgt, lbl.strip()) for src, lbl, tgt in edge_matches]
+
+        # Simple staggered layout
+        positions: dict[str, tuple[float, float]] = {}
+        for i, node_id in enumerate(node_dict.keys()):
+            offset_x = (i % 3) * 40 - 30
+            positions[node_id] = (180 + offset_x, 80 + (i * 110))
+
+        # Create rectangle + bound text for each node
+        for i, (node_id, label) in enumerate(node_dict.items()):
+            x, y = positions[node_id]
+            rect_id = f"rect-{node_id}"
+            text_id = f"text-{node_id}"
+
+            # Rectangle (slight rotation for sketchy feel)
+            angle = 0.12 if i % 2 == 0 else -0.08
+            rect = {
+                "id": rect_id,
+                "type": "rectangle",
+                "x": x,
+                "y": y,
+                "width": 165,
+                "height": 78,
+                "angle": angle,
+                **base_style,
+                "boundElements": [{"type": "text", "id": text_id}],
+                "seed": 100 + i * 7,
+                "versionNonce": 100000 + i,
+            }
+            elements.append(rect)
+
+            # Bound text (Virgil = hand-drawn font)
+            text = {
+                "id": text_id,
+                "type": "text",
+                "x": x + 12,
+                "y": y + 22,
+                "width": 140,
+                "height": 35,
+                "text": label,
+                "fontSize": 18,
+                "fontFamily": 3,
+                "textAlign": "center",
+                "verticalAlign": "middle",
+                "containerId": rect_id,
+                "strokeColor": "#5d4037",
+                "backgroundColor": "transparent",
+                "fillStyle": "solid",
+                "strokeWidth": 2,
+                "strokeStyle": "solid",
+                "roughness": 0,
+                "opacity": 100,
+                "roundness": None,
+                "seed": 200 + i * 7,
+                "version": 1,
+                "versionNonce": 200000 + i,
+                "isDeleted": False,
+                "boundElements": None,
+                "updated": 1725123456789,
+                "link": None,
+                "locked": False,
+                "groupIds": [],
+                "frameId": None,
+            }
+            elements.append(text)
+
+        # Arrows
+        for j, (src, tgt, edge_label) in enumerate(edges):
+            if src not in positions or tgt not in positions:
+                continue
+            sx, sy = positions[src]
+            tx, ty = positions[tgt]
+            start_x = sx + 140
+            start_y = sy + 38
+            end_x = tx + 20
+            end_y = ty + 38
+            arrow_id = f"arrow-{j}"
+
+            arrow = {
+                "id": arrow_id,
+                "type": "arrow",
+                "x": start_x,
+                "y": start_y,
+                "width": end_x - start_x,
+                "height": end_y - start_y,
+                "angle": 0,
+                "strokeColor": "#5d4037",
+                "backgroundColor": "transparent",
+                "fillStyle": "solid",
+                "strokeWidth": 3,
+                "strokeStyle": "solid",
+                "roughness": 2,
+                "opacity": 100,
+                "roundness": {"type": 2},
+                "seed": 300 + j * 11,
+                "version": 1,
+                "versionNonce": 300000 + j,
+                "isDeleted": False,
+                "boundElements": [],
+                "updated": 1725123456789,
+                "link": None,
+                "locked": False,
+                "points": [[0, 0], [end_x - start_x, end_y - start_y]],
+                "lastCommittedPoint": None,
+                "startBinding": {
+                    "elementId": f"rect-{src}",
+                    "focus": 0.1,
+                    "gap": 5,
+                },
+                "endBinding": {
+                    "elementId": f"rect-{tgt}",
+                    "focus": -0.1,
+                    "gap": 5,
+                },
+                "startArrowhead": None,
+                "endArrowhead": "arrow",
+                "groupIds": [],
+                "frameId": None,
+            }
+            elements.append(arrow)
+
+            if edge_label:
+                mid_x = start_x + (end_x - start_x) * 0.4
+                mid_y = start_y + (end_y - start_y) * 0.4 - 22
+                label_id = f"edge-label-{j}"
+                label_el = {
+                    "id": label_id,
+                    "type": "text",
+                    "x": mid_x,
+                    "y": mid_y,
+                    "width": 90,
+                    "height": 22,
+                    "text": edge_label,
+                    "fontSize": 14,
+                    "fontFamily": 3,
+                    "textAlign": "center",
+                    "verticalAlign": "middle",
+                    "containerId": None,
+                    "strokeColor": "#5d4037",
+                    "backgroundColor": "#fefce8",
+                    "fillStyle": "solid",
+                    "strokeWidth": 1,
+                    "strokeStyle": "solid",
+                    "roughness": 1,
+                    "opacity": 100,
+                    "roundness": None,
+                    "seed": 400 + j,
+                    "version": 1,
+                    "versionNonce": 400000 + j,
+                    "isDeleted": False,
+                    "boundElements": [],
+                    "updated": 1725123456789,
+                    "link": None,
+                    "locked": False,
+                    "groupIds": [],
+                    "frameId": None,
+                }
+                elements.append(label_el)
+
+        if not elements:
+            elements.append(self._fallback_text_element())
+        return elements
+
+    def _fallback_text_element(self) -> dict[str, Any]:
+        """Large text block fallback for non-flowchart diagrams."""
+        return {
+            "id": "fallback-text",
+            "type": "text",
+            "x": 60,
+            "y": 60,
+            "width": 720,
+            "height": 420,
+            "text": self.mermaid or self.explanation,
+            "fontSize": 17,
+            "fontFamily": 3,
+            "textAlign": "left",
+            "verticalAlign": "top",
+            "containerId": None,
+            "strokeColor": "#5d4037",
+            "backgroundColor": "transparent",
+            "fillStyle": "solid",
+            "strokeWidth": 2,
+            "strokeStyle": "solid",
+            "roughness": 1,
+            "opacity": 100,
+            "roundness": None,
+            "seed": 999,
+            "version": 1,
+            "versionNonce": 999999,
+            "isDeleted": False,
+            "boundElements": [],
+            "updated": 1725123456789,
+            "link": None,
+            "locked": False,
+            "groupIds": [],
+            "frameId": None,
+        }
 
     def model_dump(self, **kwargs: Any) -> dict[str, Any]:
         """Override to always include computed fields and exclude None values by default."""

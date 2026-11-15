@@ -61,7 +61,7 @@ Real-time Mermaid renderer updates as you edit the generated code
 <td align="center" valign="top">
 📤<br>
 <b>One-click Export</b><br>
-Export as SVG, PNG, PDF or copy Markdown embed code
+Export as SVG, PNG, PDF, Markdown or Excalidraw JSON (sketchy hand-drawn style)
 </td>
 <td align="center" valign="top">
 🧩<br>
@@ -107,6 +107,7 @@ The CLI entry point `diatype` is automatically installed from `pyproject.toml`.
 ```python
 from diatype.config import Settings
 from diatype.generator import DiagramEngine
+import json
 
 engine = DiagramEngine(Settings.load())
 diagram = engine.generate(
@@ -116,6 +117,10 @@ diagram = engine.generate(
 
 print(diagram.to_markdown())
 print("\nExplanation:", diagram.explanation)
+
+# New: export with sketchy hand-drawn styling for Excalidraw
+with open("login_flow.excalidraw", "w") as f:
+    json.dump(diagram.to_excalidraw(), f, indent=2)
 ```
 
 The returned `Diagram` object is guaranteed to contain validated Mermaid syntax.
@@ -142,6 +147,13 @@ refined = engine.refine(
 print(refined.to_markdown())
 ```
 
+**Excalidraw export** (opens in Excalidraw with hand-drawn Virgil font and roughness):
+
+```python
+ex_json = refined.to_excalidraw()
+# Save and open in https://excalidraw.com
+```
+
 **Explanation mode** (useful for documentation):
 
 ```python
@@ -163,7 +175,7 @@ curl -X POST http://127.0.0.1:8000/api/generate \
   -d '{"prompt": "sequence of a CI pipeline", "diagram_type": "sequenceDiagram"}'
 ```
 
-The `/api/refine` and `/api/explain` endpoints accept a `Diagram` payload plus an `instruction` key and return updated `Diagram` objects (or plain text for explanations). All routes are defined in `src/diatype/app.py`.
+The `/api/refine`, `/api/explain` and new `/api/excalidraw` endpoints are available. The latter accepts a `Diagram` payload and returns Excalidraw v2 JSON. All routes are defined in `src/diatype/app.py`.
 </details>
 
 ## 🔧 Configuration
@@ -194,10 +206,11 @@ flowchart TD
     Validator --> Diagram["Diagram model (models.py)"]
     Diagram -->|mermaid| Renderer["Mermaid.js (live preview)"]
     Diagram -->|SVG/Markdown| Export["Export (SVG/PNG/PDF)"]
+    Diagram -->|JSON| Excalidraw["Excalidraw export (sketchy style)"]
     Config["config.py (Settings)"] --> Engine
 ```
 
-`DiagramEngine` orchestrates prompt construction, LLM calls, parsing, validation and refinement. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend.
+`DiagramEngine` orchestrates prompt construction, LLM calls, parsing, validation and refinement. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2).
 
 ## 📁 Project structure
 
@@ -208,7 +221,7 @@ flowchart TD
 ├── src/diatype/
 │   ├── __init__.py                # public API: Diagram, DiagramEngine, DiagramRequest
 │   ├── config.py                  # Settings Pydantic model with TOML loader
-│   ├── models.py                  # Diagram & DiagramRequest with validators
+│   ├── models.py                  # Diagram & DiagramRequest with validators + to_excalidraw
 │   ├── generator.py               # DiagramEngine (generate, refine, explain)
 │   ├── validator.py               # validate_mermaid, sanitize, detect_diagram_type
 │   ├── app.py                     # FastAPI routes + Jinja2 notebook UI
@@ -228,12 +241,12 @@ flowchart TD
 pytest
 ```
 
-The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate`, `refine`, `explain`, prompt validation, fallback JSON/markdown parsing, validator integration, error handling, and snapshot-style checks for common diagram outputs. Ollama calls are fully mocked.
+The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate`, `refine`, `explain`, prompt validation, fallback JSON/markdown parsing, validator integration, error handling, snapshot-style checks for common diagram outputs, and the new `Diagram.to_excalidraw()` method. Ollama calls are fully mocked.
 
 ## 📍 Roadmap
 <!-- roadmap:start -->
 - [x] **v0.1.0** — first release: Natural Generation, Notebook UI, AI Refinement, Live Preview
-- [ ] Add Excalidraw JSON export with sketchy hand-drawn look
+- [x] Add Excalidraw JSON export with sketchy hand-drawn look
 - [ ] Implement diagram history with simple file-based versioning
 - [ ] Support PlantUML and Graphviz via additional LLM prompts
 - [ ] Add voice input using whisper for diagram descriptions
