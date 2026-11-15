@@ -7,7 +7,7 @@ name = "diatype"
 version = "0.1.0"
 description = "Converts natural language into editable Mermaid diagrams with local LLMs inside a hand-drawn notebook interface"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
     {name = "DiaType Contributors", email = "hello@diatype.dev"}

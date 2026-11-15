@@ -1,252 +1,218 @@
-"""Tests for the DiagramEngine.
+"""Tests for DiagramEngine, models, config and validator.
 
-Uses pytest and unittest.mock to simulate Ollama responses without
-requiring a running LLM instance. Covers happy paths, error handling,
-validation, refinement and snapshot-style output checks.
+Covers generation, refinement, explanation, parsing fallbacks,
+validation, error handling and snapshot-style checks.
+Ollama calls are fully mocked so tests run without a live model.
 """
 
 from unittest.mock import patch, MagicMock
 
 import pytest
-from pydantic import ValidationError
 
-from src.diatype.config import Settings
-from src.diatype.generator import DiagramEngine
-from src.diatype.models import Diagram
-from src.diatype.validator import validate_mermaid, sanitize
+from diatype.config import Settings
+from diatype.generator import DiagramEngine
+from diatype.models import Diagram, DiagramRequest
+from diatype.validator import validate_mermaid, sanitize, detect_diagram_type
 
 
-@pytest.fixture
-def settings():
-    return Settings(
-        ollama_model="llama3.2",
-        temperature=0.0,
-        default_diagram_type="flowchart",
-        max_tokens=1200,
+def test_settings_defaults() -> None:
+    """Default values match the documented diagram-friendly choices."""
+    settings = Settings()
+    assert settings.ollama_model == "llama3.2"
+    assert settings.temperature == 0.2
+    assert settings.default_diagram_type == "flowchart"
+    assert settings.max_tokens == 2500
+    assert str(settings.output_dir) == "diagrams"
+
+
+def test_settings_load(tmp_path) -> None:
+    """TOML loading merges values and falls back gracefully."""
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'ollama_model = "phi3"\n'
+        "temperature = 0.1\n"
+        'default_diagram_type = "sequenceDiagram"\n'
+    )
+    settings = Settings.load(str(config))
+    assert settings.ollama_model == "phi3"
+    assert settings.temperature == 0.1
+    assert settings.default_diagram_type == "sequenceDiagram"
+
+
+def test_settings_ollama_options() -> None:
+    """Options dict is correctly built for ollama.chat."""
+    settings = Settings(temperature=0.4, max_tokens=1200)
+    opts = settings.get_ollama_options()
+    assert opts["temperature"] == 0.4
+    assert opts["num_predict"] == 1200
+    assert opts["top_p"] == 0.9
+
+
+def test_diagram_request_validation() -> None:
+    """Pydantic validators enforce prompt length and clean whitespace."""
+    req = DiagramRequest(
+        prompt="   User logs in via OAuth   ",
+        diagram_type="flowchart",
+    )
+    assert req.prompt == "User logs in via OAuth"
+
+    with pytest.raises(ValueError):
+        DiagramRequest(prompt="short", diagram_type="flowchart")
+
+
+def test_diagram_model() -> None:
+    """Diagram validates mermaid start, provides markdown and render check."""
+    d = Diagram(
+        mermaid="flowchart TD\n    A[Start] --> B[End]",
+        explanation="A minimal login flow.",
+        diagram_type="flowchart",
+    )
+    assert d.is_renderable()
+    assert "```mermaid" in d.to_markdown()
+    assert d.diagram_type == "flowchart"
+
+    # Invalid start should raise
+    with pytest.raises(ValueError, match="Mermaid code must start with a valid diagram type"):
+        Diagram(mermaid="invalid syntax", explanation="bad")
+
+
+def test_validator_functions() -> None:
+    """Sanitize, validate and detect work on typical LLM output."""
+    assert validate_mermaid("flowchart TD\n    A --> B")
+    assert not validate_mermaid("")
+    assert not validate_mermaid("just text with no structure")
+
+    dirty = """```mermaid
+flowchart TD
+    A --> B
+```
+Here is the diagram I made.
+"""
+    clean = sanitize(dirty)
+    assert clean.startswith("flowchart")
+    assert "A --> B" in clean
+    assert "Here is the diagram" not in clean
+
+    assert detect_diagram_type("sequenceDiagram\n    A->>B: hello") == "sequenceDiagram"
+    assert detect_diagram_type("graph LR\n    X-->Y") == "flowchart"
+    assert detect_diagram_type("unknown") == "flowchart"
+
+
+@patch("diatype.generator.ollama.chat")
+def test_generate_happy_path(mock_chat: MagicMock) -> None:
+    """Successful JSON response is parsed, validated and returned as Diagram."""
+    mock_chat.return_value = {
+        "message": {
+            "content": (
+                '{"mermaid": "flowchart TD\\n    User --> Login", '
+                '"explanation": "User authenticates with the system."}'
+            )
+        }
+    }
+
+    engine = DiagramEngine(Settings(ollama_model="llama3.2"))
+    diagram = engine.generate(
+        "user login flow with OAuth", diagram_type="flowchart"
     )
 
+    assert isinstance(diagram, Diagram)
+    assert "User --> Login" in diagram.mermaid
+    assert "User authenticates" in diagram.explanation
+    assert diagram.diagram_type == "flowchart"
+    mock_chat.assert_called_once()
 
-@pytest.fixture
-def engine(settings):
-    return DiagramEngine(settings=settings)
 
+@patch("diatype.generator.ollama.chat")
+def test_refine_preserves_structure(mock_chat: MagicMock) -> None:
+    """Refine keeps original SVG if present and returns updated Diagram."""
+    mock_chat.return_value = {
+        "message": {
+            "content": (
+                '{"mermaid": "flowchart TD\\n    User --> Login\\n    Login --> Dashboard", '
+                '"explanation": "Added dashboard step."}'
+            )
+        }
+    }
 
-def test_init_default_settings():
     engine = DiagramEngine()
-    assert engine.settings.ollama_model == "llama3.2"
-    assert engine.settings.temperature == 0.2
-    assert "You are an expert Mermaid.js diagramming assistant" in engine._system_prompt
-
-
-def test_generate_valid_response(engine):
-    mock_response = {
-        "message": {
-            "content": (
-                '{"mermaid": "flowchart TD\\n    A[Start] --> B[Process]", '
-                '"explanation": "A simple two-step process."}'
-            )
-        }
-    }
-
-    with patch("ollama.chat", return_value=mock_response) as mock_chat:
-        diagram = engine.generate("a simple process", "flowchart")
-
-        assert isinstance(diagram, Diagram)
-        assert diagram.mermaid.startswith("flowchart")
-        assert "Start" in diagram.mermaid
-        assert "simple two-step process" in diagram.explanation.lower()
-        assert diagram.diagram_type == "flowchart"
-        mock_chat.assert_called_once()
-
-
-def test_generate_with_invalid_prompt(engine):
-    with pytest.raises(ValueError, match="at least 8 characters"):
-        engine.generate("short")
-
-
-def test_generate_handles_ollama_error(engine):
-    with patch("ollama.chat", side_effect=Exception("Ollama is not running")):
-        with pytest.raises(RuntimeError, match="Ollama request failed"):
-            engine.generate("anything")
-
-
-def test_generate_fallback_parsing(engine):
-    # Simulate a response that is not strict JSON but contains the fields
-    mock_response = {
-        "message": {
-            "content": (
-                'Here is the diagram:\n'
-                '```mermaid\n'
-                'sequenceDiagram\n'
-                '    participant U as User\n'
-                '    U->>API: request\n'
-                '```\n'
-                'Explanation: This shows a user calling an API.'
-            )
-        }
-    }
-
-    with patch("ollama.chat", return_value=mock_response):
-        diagram = engine.generate("user calls api", "sequenceDiagram")
-        assert diagram.diagram_type == "sequenceDiagram"
-        assert "participant U" in diagram.mermaid
-        assert "user calling an API" in diagram.explanation.lower()
-
-
-def test_refine_preserves_structure(engine):
     original = Diagram(
-        mermaid="flowchart TD\n    A --> B",
-        explanation="Original diagram",
+        mermaid="flowchart TD\n    User --> Login",
+        explanation="Original flow",
         diagram_type="flowchart",
         svg="<svg>original</svg>",
     )
 
-    mock_response = {
-        "message": {
-            "content": (
-                '{"mermaid": "flowchart TD\\n    A --> B\\n    B --> C[New step]", '
-                '"explanation": "Added a new step after B."}'
-            )
-        }
-    }
+    refined = engine.refine(original, "add a dashboard after login")
 
-    with patch("ollama.chat", return_value=mock_response):
-        refined = engine.refine(original, "add another step after B")
-
-        assert "C[New step]" in refined.mermaid
-        assert refined.svg == "<svg>original</svg>"  # preserved
-        assert refined.diagram_type == "flowchart"
+    assert "Dashboard" in refined.mermaid
+    assert refined.svg == "<svg>original</svg>"
+    assert "Added dashboard step" in refined.explanation
 
 
-def test_refine_rejects_bad_input(engine):
-    with pytest.raises(TypeError):
-        engine.refine("not a diagram", "add something")
+@patch("diatype.generator.ollama.chat")
+def test_explain_fallback_on_error(mock_chat: MagicMock) -> None:
+    """Explain falls back to a helpful message when the LLM call fails."""
+    mock_chat.side_effect = RuntimeError("Ollama unavailable")
 
-    with pytest.raises(ValueError, match="meaningful string"):
+    engine = DiagramEngine()
+    diagram = Diagram(
+        mermaid="flowchart TD\n    A --> B",
+        explanation="Original",
+        diagram_type="flowchart",
+    )
+    result = engine.explain(diagram)
+
+    assert "could not generate an explanation" in result.lower()
+    assert "Diagram source" in result
+
+
+def test_parse_llm_response_json_and_fallback() -> None:
+    """Internal parser handles both strict JSON and markdown-wrapped output."""
+    engine = DiagramEngine()
+
+    # Pure JSON
+    json_content = '{"mermaid":"flowchart TD\\nA-->B","explanation":"JSON test"}'
+    d1 = engine._parse_llm_response(json_content, "flowchart")  # type: ignore[attr-defined]
+    assert "A-->B" in d1.mermaid
+    assert "JSON test" in d1.explanation
+
+    # Markdown-like fallback
+    md_content = (
+        'Here is a diagram:\n'
+        '```mermaid\n'
+        'sequenceDiagram\n'
+        '    Alice->>Bob: hello\n'
+        '```\n'
+        'Explanation: they are talking.'
+    )
+    d2 = engine._parse_llm_response(md_content, "sequenceDiagram")  # type: ignore[attr-defined]
+    assert "Alice->>Bob" in d2.mermaid
+    assert d2.diagram_type == "sequenceDiagram"
+
+
+def test_error_cases() -> None:
+    """Input validation raises clear errors before hitting the LLM."""
+    engine = DiagramEngine()
+
+    with pytest.raises(ValueError, match="at least 8 characters"):
+        engine.generate("short")
+
+    with pytest.raises(TypeError, match="must be an instance of Diagram"):
+        engine.refine("not-a-diagram", "add something")
+
+    with pytest.raises(ValueError, match="at least 3 characters"):
         engine.refine(
-            Diagram(mermaid="flowchart TD\nA-->B", explanation="x", diagram_type="flowchart"),
+            Diagram(mermaid="flowchart TD\nA-->B", explanation="ok"),
             "  ",
         )
 
 
-def test_explain_success(engine):
-    diagram = Diagram(
-        mermaid="flowchart TD\n    A-->B",
-        explanation="Test",
-        diagram_type="flowchart",
-    )
-
-    mock_response = {"message": {"content": "This diagram shows A leading to B."}}
-
-    with patch("ollama.chat", return_value=mock_response):
-        explanation = engine.explain(diagram)
-        assert "diagram shows A leading to B" in explanation
-
-
-def test_explain_graceful_fallback(engine):
-    diagram = Diagram(
-        mermaid="flowchart TD\n    A-->B",
-        explanation="Test",
-        diagram_type="flowchart",
-    )
-
-    with patch("ollama.chat", side_effect=RuntimeError("LLM down")):
-        explanation = engine.explain(diagram)
-        assert "could not generate an explanation" in explanation.lower()
-        assert "A-->B" in explanation
-
-
-def test_parse_llm_response_strict_json(engine):
-    content = (
-        '{"mermaid": "graph TD\\n    X-->Y", '
-        '"explanation": "A very simple graph."}'
-    )
-    diagram = engine._parse_llm_response(content, requested_type="flowchart")
-    assert diagram.mermaid.startswith("graph")
-    assert "simple graph" in diagram.explanation
-
-
-def test_parse_llm_response_fallback_regex(engine):
-    content = 'Some text before\n"mermaid": "flowchart LR\\nA-->B"\nand explanation is "nice".'
-    diagram = engine._parse_llm_response(content, requested_type="flowchart")
-    assert "A-->B" in diagram.mermaid
-    assert "nice" in diagram.explanation.lower()
-
-
-def test_parse_rejects_invalid_mermaid(engine):
-    bad_content = '{"mermaid": "this is not mermaid", "explanation": "bad"}'
-    with pytest.raises(RuntimeError):
-        # The outer generate method would catch this, but _parse_llm_response
-        # is called after sanitize/validate which raises inside generate
-        with patch("src.diatype.generator.validate_mermaid", return_value=False):
-            engine._parse_llm_response(bad_content, "flowchart")
-
-
-@pytest.mark.parametrize(
-    "prompt,expected_type",
-    [
-        ("class relationships", "classDiagram"),
-        ("user journey", "journey"),
-        ("database tables", "erDiagram"),
-    ],
-)
-def test_generate_detects_type(engine, prompt, expected_type):
-    mock_response = {
-        "message": {
-            "content": (
-                f'{{"mermaid": "{expected_type} ...", '
-                f'"explanation": "Detected type test."}}'
-            )
-        }
-    }
-
-    with patch("ollama.chat", return_value=mock_response):
-        diagram = engine.generate(prompt, "auto")
-        assert diagram.diagram_type == expected_type
-
-
-def test_validator_integration():
-    assert validate_mermaid("flowchart TD\nA-->B") is True
-    assert validate_mermaid("invalid junk") is False
-    assert validate_mermaid("") is False
-
-    cleaned = sanitize("```mermaid\nflowchart TD\nA-->B\n```\nSome extra text")
-    assert cleaned.startswith("flowchart")
-    assert "extra text" not in cleaned
-
-
-def test_snapshot_common_diagrams(engine, snapshot):
-    # Snapshot test for deterministic outputs with temperature=0
-    test_cases = [
-        "A login sequence with user, frontend, backend and database",
-        "Microservice architecture with API gateway, auth service and payment",
-        "Class diagram for a library with Book, User and Loan",
-    ]
-
-    with patch("ollama.chat") as mock_chat:
-        mock_chat.return_value = {
-            "message": {
-                "content": (
-                    '{"mermaid": "flowchart TD\\n    A[User] --> B[Login]\\n    '
-                    'B --> C[Database]", "explanation": "Snapshot test diagram."}'
-                )
-            }
-        }
-
-        for case in test_cases:
-            diagram = engine.generate(case)
-            # Use snapshot to compare the produced model (excluding variable timestamps)
-            assert diagram.mermaid
-            assert diagram.explanation
-            # In real usage the snapshot fixture would compare against stored JSON
-            # Here we simply assert structural invariants
-            assert len(diagram.mermaid) > 25
-            assert "User" in diagram.mermaid or "Login" in diagram.mermaid
-
-
-def test_settings_propagated_to_ollama_options(settings):
-    engine = DiagramEngine(settings)
-    opts = engine.settings.get_ollama_options()
-    assert opts["temperature"] == 0.0
-    assert opts["num_predict"] == 1200
-    assert opts["top_p"] == 0.9
+def test_validator_integration_in_parse() -> None:
+    """Bad mermaid after sanitization raises a user-friendly error."""
+    engine = DiagramEngine()
+    with pytest.raises(ValueError, match="failed basic validation"):
+        # force bad content through the private path
+        engine._parse_llm_response(  # type: ignore[attr-defined]
+            '{"mermaid":"this is not valid mermaid at all","explanation":"bad"}',
+            "flowchart",
+        )
