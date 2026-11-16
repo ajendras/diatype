@@ -97,7 +97,7 @@ class DiagramEngine:
         if not isinstance(diagram, Diagram):
             raise TypeError("diagram must be an instance of Diagram")
         if not isinstance(instruction, str) or len(instruction.strip()) < 3:
-            raise ValueError("instruction must be a meaningful string (>= 3 chars)")
+            raise ValueError("instruction must be at least 3 characters")
 
         user_content = (
             f"Current diagram (type: {diagram.diagram_type}):\n\n"
@@ -166,6 +166,7 @@ class DiagramEngine:
             # Graceful fallback so the UI never completely breaks
             return (
                 f"I could not generate an explanation at this time.\n\n"
+                f"{diagram.explanation}\n\n"
                 f"Diagram source:\n{diagram.to_markdown()}"
             )
 

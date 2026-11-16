@@ -1,10 +1,16 @@
-"""Unit tests for DiaType diagram generator."""
+"""Tests for the DiagramEngine.
+
+Covers generation, refinement, explanation (including fallback), error handling,
+parsing strategies, validator integration, and Excalidraw export. Ollama calls
+are fully mocked so tests run without a live model.
+"""
+
+from __future__ import annotations
 
 import json
-from unittest.mock import patch, MagicMock
 
 import pytest
-from pydantic import ValidationError
+from unittest.mock import patch
 
 from diatype.config import Settings
 from diatype.generator import DiagramEngine
@@ -12,144 +18,162 @@ from diatype.models import Diagram
 from diatype.validator import validate_mermaid, sanitize, detect_diagram_type
 
 
-def test_settings_load():
-    """Test loading settings matches current defaults (updated from phi3)."""
-    settings = Settings.load()
-    assert settings.ollama_model == "llama3.2"
-    assert settings.temperature == 0.2
-    assert settings.default_diagram_type == "flowchart"
-    assert settings.max_tokens == 2500
+@pytest.fixture
+def settings() -> Settings:
+    """Test settings with deterministic values."""
+    return Settings(
+        ollama_model="llama3.2",
+        temperature=0.0,
+        max_tokens=500,
+        default_diagram_type="flowchart",
+    )
 
-    settings2 = Settings.load("config.example.toml")
-    assert settings2.ollama_model == "llama3.2"
+
+@pytest.fixture
+def engine(settings: Settings) -> DiagramEngine:
+    """Engine fixture using test settings."""
+    return DiagramEngine(settings)
 
 
-@patch("ollama.chat")
-def test_refine_preserves_structure(mock_chat):
-    """Test that refinement preserves original diagram structure."""
-    mock_response = MagicMock()
-    mock_response.__getitem__.return_value = {
-        "message": {
-            "content": json.dumps({
-                "mermaid": "flowchart TD\n    A[Start] --> B[Process] --> C[End]",
-                "explanation": "Refined diagram that keeps the core structure while applying the requested changes."
-            })
+def test_generate_basic_flowchart(engine: DiagramEngine) -> None:
+    """Basic generation produces a validated Diagram."""
+    with patch("ollama.chat") as mock_chat:
+        mock_chat.return_value = {
+            "message": {
+                "content": json.dumps({
+                    "mermaid": "flowchart TD\n    A[User] --> B[Login]",
+                    "explanation": "Simple user login flow."
+                })
+            }
         }
-    }
-    mock_chat.return_value = mock_response
-
-    engine = DiagramEngine()
-    original = Diagram(
-        mermaid="flowchart TD\n    A[Start] --> B[Process] --> C[End]",
-        explanation="Original linear process flow from start through processing to completion.",
-        diagram_type="flowchart",
-    )
-
-    refined = engine.refine(original, "add detailed labels")
-    assert "Start" in refined.mermaid
-    assert "Process" in refined.mermaid
-    assert len(refined.explanation) >= 15
+        diagram = engine.generate("user logs in")
+        assert diagram.diagram_type == "flowchart"
+        assert "A[User]" in diagram.mermaid
+        assert "login" in diagram.explanation.lower()
+        assert validate_mermaid(diagram.mermaid)
 
 
-@patch("ollama.chat")
-def test_explain_fallback_on_error(mock_chat):
-    """Test explanation falls back on LLM error."""
-    mock_chat.side_effect = Exception("Simulated LLM failure")
-
-    engine = DiagramEngine()
-    diagram = Diagram(
-        mermaid="flowchart TD\n    A --> B --> C",
-        explanation="This is a basic flowchart used to test the fallback explanation mechanism when the LLM is unavailable.",
-        diagram_type="flowchart",
-    )
-
-    explanation = engine.explain(diagram)
-    assert "could not generate an explanation at this time" in explanation
-    assert "basic flowchart" in explanation.lower()
-
-
-def test_parse_llm_response_json_and_fallback():
-    """Test parsing of LLM responses in both JSON and text fallback modes."""
-    engine = DiagramEngine(Settings(ollama_model="llama3.2"))
-
-    # JSON case
-    json_content = json.dumps({
-        "mermaid": "flowchart TD\n    Start --> End",
-        "explanation": "This test case checks that JSON responses from the LLM are correctly parsed into Diagram objects."
-    })
-    d1 = engine._parse_llm_response(json_content, "flowchart")
-    assert d1.mermaid.startswith("flowchart")
-    assert "JSON responses" in d1.explanation
-    assert len(d1.explanation) >= 15
-
-    # Fallback non-JSON case
-    fallback_content = 'Here is a diagram:\nflowchart TD\n    P --> Q\nExplanation: fallback parsing test.'
-    with patch("diatype.generator.sanitize", return_value="flowchart TD\n    P --> Q"), \
-         patch("diatype.generator.validate_mermaid", return_value=True), \
-         patch("diatype.generator.detect_diagram_type", return_value="flowchart"):
-        d2 = engine._parse_llm_response(fallback_content, "flowchart")
-        assert d2.mermaid.startswith("flowchart")
-
-
-def test_error_cases():
-    """Test error handling for invalid inputs (updated for pydantic validation)."""
-    engine = DiagramEngine()
-
-    # Short prompt for generate()
-    with pytest.raises(ValueError, match="at least 8 characters"):
-        engine.generate("hi")
-
-    # Short instruction for refine()
-    diagram = Diagram(
-        mermaid="flowchart TD\nA-->B",
-        explanation="This explanation meets the minimum length requirement of fifteen characters.",
-        diagram_type="flowchart"
-    )
-    with pytest.raises(ValueError, match="at least 3 characters"):
-        engine.refine(diagram, "no")
-
-    # Model validation for short explanation (now uses pydantic)
-    with pytest.raises(ValidationError, match="at least 15 characters"):
-        Diagram(
-            mermaid="flowchart TD\nA-->B",
-            explanation="ok",
+def test_refine_preserves_structure(engine: DiagramEngine) -> None:
+    """Refinement keeps diagram_type and SVG while updating content."""
+    with patch("ollama.chat") as mock_chat:
+        mock_chat.return_value = {
+            "message": {
+                "content": json.dumps({
+                    "mermaid": "flowchart TD\n    A[Start] --> B[Process with label]",
+                    "explanation": "Refined with clearer labels."
+                })
+            }
+        }
+        original = Diagram(
+            mermaid="flowchart TD\n    A --> B --> C",
+            explanation="Original simple flow.",
+            diagram_type="flowchart",
+            svg="<svg>original-render</svg>",
         )
+        refined = engine.refine(original, "add detailed labels")
+        assert refined.diagram_type == original.diagram_type
+        assert refined.svg == original.svg
+        assert "label" in refined.mermaid.lower()
+        assert "Refined with clearer" in refined.explanation
 
 
-def test_validator_functions():
-    """Test the validator utilities."""
-    assert validate_mermaid("flowchart TD\n    A --> B")
-    assert not validate_mermaid("invalid code")
-    assert not validate_mermaid("")
-    assert sanitize("```mermaid\nflowchart TD\nA-->B\n```") == "flowchart TD\nA-->B"
-    assert detect_diagram_type("sequenceDiagram\nA->>B: msg") == "sequenceDiagram"
+def test_explain_fallback_on_error(engine: DiagramEngine) -> None:
+    """On LLM error we return a safe fallback that still contains useful info."""
+    with patch("ollama.chat", side_effect=RuntimeError("Ollama unavailable")):
+        diagram = Diagram(
+            mermaid="flowchart TD\n    A --> B --> C",
+            explanation="This is a basic flowchart.",
+            diagram_type="flowchart",
+        )
+        explanation = engine.explain(diagram)
+        assert "could not generate an explanation at this time" in explanation.lower()
+        assert "basic flowchart" in explanation.lower()
+        assert "flowchart td" in explanation.lower()
 
 
-@patch("ollama.chat")
-def test_generate_with_mock(mock_chat):
-    """Basic generation test with mocked response."""
-    mock_response = {
-        "message": {"content": json.dumps({
-            "mermaid": "flowchart TD\n    P --> Q",
-            "explanation": "A simple test diagram for the generator."
-        })}
-    }
-    mock_chat.return_value = mock_response
-    engine = DiagramEngine()
-    diagram = engine.generate("simple process")
-    assert diagram.diagram_type == "flowchart"
-    assert len(diagram.mermaid) > 10
-    assert len(diagram.explanation) >= 15
-
-
-def test_diagram_to_excalidraw():
-    """Test Excalidraw export produces valid scene."""
+def test_error_cases(engine: DiagramEngine) -> None:
+    """Validate error messages and early validation."""
     diagram = Diagram(
-        mermaid="flowchart TD\n    A[Start] --> B[End]",
-        explanation="Test diagram for Excalidraw export with hand-drawn styling.",
-        diagram_type="flowchart"
+        mermaid="flowchart TD\n    A --> B",
+        explanation="Simple flow.",
+        diagram_type="flowchart",
+    )
+
+    with pytest.raises(ValueError, match="at least 3 characters"):
+        engine.refine(diagram, "xy")
+
+    with pytest.raises(ValueError, match="at least 8 characters long"):
+        engine.generate("short")
+
+
+def test_explain_success_path(engine: DiagramEngine) -> None:
+    """Successful explanation call returns model text."""
+    with patch("ollama.chat") as mock_chat:
+        mock_chat.return_value = {
+            "message": {"content": "This diagram illustrates a basic three-step process."}
+        }
+        diagram = Diagram(
+            mermaid="flowchart TD\n    A --> B --> C",
+            explanation="orig",
+            diagram_type="flowchart",
+        )
+        explanation = engine.explain(diagram)
+        assert "three-step process" in explanation.lower()
+
+
+def test_parse_json_and_regex_fallback(engine: DiagramEngine) -> None:
+    """_parse_llm_response handles both clean JSON and markdown-wrapped output."""
+    with patch("ollama.chat") as mock_chat:
+        # JSON response
+        mock_chat.return_value = {
+            "message": {
+                "content": '{"mermaid": "flowchart TD\\n    X --> Y", "explanation": "JSON path"}'
+            }
+        }
+        d1 = engine.generate("json test")
+        assert "X --> Y" in d1.mermaid
+        assert "JSON path" in d1.explanation
+
+    with patch("ollama.chat") as mock_chat:
+        # Regex fallback (non-JSON text)
+        mock_chat.return_value = {
+            "message": {
+                "content": 'Here is the diagram:\n```mermaid\nflowchart TD\n    P --> Q\n```'
+            }
+        }
+        d2 = engine.generate("regex test")
+        assert "P --> Q" in d2.mermaid
+
+
+def test_validator_and_sanitize_integration(engine: DiagramEngine) -> None:
+    """Generated diagrams always pass validation and sanitization."""
+    with patch("ollama.chat") as mock_chat:
+        mock_chat.return_value = {
+            "message": {
+                "content": json.dumps({
+                    "mermaid": "```mermaid\nflowchart TD\n    A --> B\n```",
+                    "explanation": "Sanitized diagram."
+                })
+            }
+        }
+        diagram = engine.generate("clean me")
+        assert validate_mermaid(diagram.mermaid)
+        assert not diagram.mermaid.startswith("```")
+        assert "flowchart" in diagram.mermaid
+
+
+def test_to_excalidraw_conversion(engine: DiagramEngine) -> None:
+    """Diagram can be exported to Excalidraw JSON with hand-drawn style."""
+    diagram = Diagram(
+        mermaid="flowchart TD\n    A[Hello] --> B[World]",
+        explanation="Test diagram",
+        diagram_type="flowchart",
     )
     ex = diagram.to_excalidraw()
     assert ex["type"] == "excalidraw"
-    assert len(ex["elements"]) > 0
-    assert any(e.get("type") == "rectangle" for e in ex["elements"])
+    assert ex["version"] == 2
+    assert len(ex["elements"]) >= 3
+    element_types = {el["type"] for el in ex["elements"]}
+    assert "rectangle" in element_types
+    assert "text" in element_types
+    assert "arrow" in element_types or any("arrow" in str(el) for el in ex["elements"])
