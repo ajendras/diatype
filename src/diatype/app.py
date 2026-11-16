@@ -88,7 +88,7 @@ async def api_refine(
 
         diagram = Diagram(
             mermaid=payload.get("mermaid", ""),
-            explanation=payload.get("explanation", ""),
+            explanation=payload.get("explanation") or "The diagram has been refined according to your instructions.",
             svg=payload.get("svg", ""),
             diagram_type=payload.get("diagram_type", "flowchart"),
         )
@@ -110,7 +110,7 @@ async def api_explain(
         payload = await request.json()
         diagram = Diagram(
             mermaid=payload.get("mermaid", ""),
-            explanation=payload.get("explanation", ""),
+            explanation=payload.get("explanation") or "Explanation of the provided Mermaid diagram.",
             diagram_type=payload.get("diagram_type", "flowchart"),
             svg=payload.get("svg", ""),
         )
@@ -131,7 +131,7 @@ async def api_excalidraw(request: Request) -> dict[str, Any]:
         payload = await request.json()
         diagram = Diagram(
             mermaid=payload.get("mermaid", ""),
-            explanation=payload.get("explanation", ""),
+            explanation=payload.get("explanation") or "Diagram exported for use in Excalidraw with hand-drawn styling.",
             diagram_type=payload.get("diagram_type", "flowchart"),
             svg=payload.get("svg", ""),
         )
