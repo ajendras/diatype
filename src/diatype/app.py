@@ -21,7 +21,7 @@ from .models import Diagram, DiagramRequest
 
 app = FastAPI(
     title="DiaType",
-    version="0.2.0",
+    version="0.3.0",
     description="Hand-drawn notebook for turning natural language into Mermaid diagrams — 100% local.",
 )
 
@@ -61,6 +61,7 @@ async def api_generate(
     """Generate a new diagram from a natural language prompt.
 
     All output is sanitised and validated before being returned.
+    A versioned copy is saved to the history directory.
     """
     try:
         diagram = engine.generate(req.prompt, req.diagram_type)
@@ -78,6 +79,7 @@ async def api_refine(
     """Refine an existing diagram based on a natural-language instruction.
 
     Accepts a JSON payload containing a full Diagram plus an 'instruction' key.
+    The refined version is saved with an incremented version number.
     """
     try:
         payload = await request.json()
@@ -138,6 +140,40 @@ async def api_excalidraw(request: Request) -> dict[str, Any]:
         return diagram.to_excalidraw()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Excalidraw export failed: {exc}") from exc
+
+
+@app.get("/api/history")
+async def api_history(
+    engine: DiagramEngine = Depends(get_engine),
+) -> list[dict[str, Any]]:
+    """Return list of history entries (newest first)."""
+    return engine.list_history(limit=30)
+
+
+@app.post("/api/load_version", response_model=Diagram)
+async def api_load_version(
+    request: Request, engine: DiagramEngine = Depends(get_engine)
+) -> Diagram:
+    """Load a specific version from the file-based history by ID and version number."""
+    try:
+        payload = await request.json()
+        diagram_id: str = str(payload.get("id", "")).strip()
+        version: int = int(payload.get("version", 1))
+
+        if not diagram_id:
+            raise ValueError("id is required")
+
+        diagram = engine.load_version(diagram_id, version)
+        if diagram is None:
+            raise HTTPException(status_code=404, detail="History entry not found")
+
+        return diagram
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load version: {exc}"
+        ) from exc
 
 
 @app.get("/health")

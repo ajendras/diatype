@@ -53,17 +53,17 @@ Iterate with natural-language instructions; original structure is preserved
 </td>
 </tr>
 <tr>
-<td align="center" valign="top">
+<td align="center" valign="top" width="33%">
 👀<br>
 <b>Live Preview</b><br>
 Real-time Mermaid renderer updates as you edit the generated code
 </td>
-<td align="center" valign="top">
+<td align="center" valign="top" width="33%">
 📤<br>
 <b>One-click Export</b><br>
 Export as SVG, PNG, PDF, Markdown or Excalidraw JSON (sketchy hand-drawn style)
 </td>
-<td align="center" valign="top">
+<td align="center" valign="top" width="33%">
 🧩<br>
 <b>Template Gallery</b><br>
 Start from common patterns (architecture, user flows, sequence diagrams)
@@ -80,7 +80,11 @@ Ask the LLM to describe a diagram or suggest improvements in plain English
 <b>CLI Companion</b><br>
 Generate diagrams directly from terminal with <code>diatype generate</code>
 </td>
-<td></td>
+<td align="center" valign="top">
+📜<br>
+<b>Versioned History</b><br>
+Automatic file-based versioning; browse, reload any previous state from disk
+</td>
 </tr>
 </table>
 
@@ -121,6 +125,11 @@ print("\nExplanation:", diagram.explanation)
 # New: export with sketchy hand-drawn styling for Excalidraw
 with open("login_flow.excalidraw", "w") as f:
     json.dump(diagram.to_excalidraw(), f, indent=2)
+
+# History is automatically maintained
+print("\n--- Recent history entries ---")
+for entry in engine.list_history(limit=5):
+    print(f"• {entry['title']} (v{entry['version']}) at {entry['created_at'][:16]}")
 ```
 
 The returned `Diagram` object is guaranteed to contain validated Mermaid syntax.
@@ -145,6 +154,28 @@ refined = engine.refine(
     "add error handling step and a retry loop"
 )
 print(refined.to_markdown())
+```
+
+**Diagram history & versioning**
+
+Every generated or refined diagram is automatically saved as a versioned JSON file (including full metadata, Mermaid source, explanation and prompt). History lives in `./diagrams/history/` (configurable via `config.toml`).
+
+```python
+# List recent diagrams
+for entry in engine.list_history(limit=10):
+    print(f"{entry['created_at'][:16]} | {entry['id']}_v{entry['version']} | {entry['title']}")
+
+# Load a previous version
+previous = engine.load_version("diag_20241001_120000", version=2)
+if previous:
+    print(previous.to_markdown())
+```
+
+**CLI history support**:
+
+```bash
+diatype history                    # list recent entries
+diatype history --id diag_20241001_120000 --version 2
 ```
 
 **Excalidraw export** (opens in Excalidraw with hand-drawn Virgil font and roughness):
@@ -175,20 +206,23 @@ curl -X POST http://127.0.0.1:8000/api/generate \
   -d '{"prompt": "sequence of a CI pipeline", "diagram_type": "sequenceDiagram"}'
 ```
 
-The `/api/refine`, `/api/explain` and new `/api/excalidraw` endpoints are available. The latter accepts a `Diagram` payload and returns Excalidraw v2 JSON. All routes are defined in `src/diatype/app.py`.
+The `/api/refine`, `/api/explain`, `/api/excalidraw`, `/api/history` and `/api/load_version` endpoints are available. All routes are defined in `src/diatype/app.py`.
 </details>
 
 ## 🔧 Configuration
 
 DiaType loads settings from `config.toml` (or falls back to defaults). The `Settings` class in `src/diatype/config.py` exposes:
 
-| Option                | Default          | Description |
-|-----------------------|------------------|-------------|
-| `ollama_model`        | `llama3.2`       | Ollama model tag. Smaller instruction-tuned models work best. |
-| `temperature`         | `0.2`            | Lower values yield more deterministic diagram syntax (0.0-0.7). |
-| `default_diagram_type`| `flowchart`      | One of the supported Mermaid kinds (validated by regex). |
-| `max_tokens`          | `2500`           | Maximum tokens requested from the model. |
-| `output_dir`          | `diagrams`       | Directory for exported files (created automatically). |
+| Option                | Default                  | Description |
+|-----------------------|--------------------------|-------------|
+| `ollama_model`        | `llama3.2`               | Ollama model tag. Smaller instruction-tuned models work best. |
+| `temperature`         | `0.2`                    | Lower values yield more deterministic diagram syntax (0.0-0.7). |
+| `default_diagram_type`| `flowchart`              | One of the supported Mermaid kinds (validated by regex). |
+| `max_tokens`          | `2500`                   | Maximum tokens requested from the model. |
+| `output_dir`          | `diagrams`               | Directory for exported files (created automatically). |
+| `history_enabled`     | `true`                   | Whether to automatically save diagrams to versioned history. |
+| `max_history`         | `30`                     | Maximum history files to retain (oldest pruned first). |
+| `history_dir`         | `diagrams/history`       | Where versioned JSON files are stored. |
 
 See `config.example.toml` for a ready-to-copy sample.
 
@@ -196,7 +230,7 @@ See `config.example.toml` for a ready-to-copy sample.
 
 ```mermaid
 flowchart TD
-    User[User / CLI] -->|prompt| CLI["cli.py (diatype generate/serve)"]
+    User[User / CLI] -->|prompt| CLI["cli.py (diatype generate/serve/history)"]
     User -->|browser| UI["templates/index.html + HTMX"]
     CLI --> Engine["DiagramEngine (generator.py)"]
     UI --> FastAPI["FastAPI (/api/generate, /api/refine, /api/explain)"]
@@ -204,13 +238,14 @@ flowchart TD
     Engine -->|system + user prompt| Ollama["Ollama (local LLM)"]
     Ollama -->|JSON response| Validator["validator.py (sanitize, validate_mermaid, detect_diagram_type)"]
     Validator --> Diagram["Diagram model (models.py)"]
+    Diagram -->|save/load| History["diagrams/history/ (JSON versions)"]
     Diagram -->|mermaid| Renderer["Mermaid.js (live preview)"]
     Diagram -->|SVG/Markdown| Export["Export (SVG/PNG/PDF)"]
     Diagram -->|JSON| Excalidraw["Excalidraw export (sketchy style)"]
     Config["config.py (Settings)"] --> Engine
 ```
 
-`DiagramEngine` orchestrates prompt construction, LLM calls, parsing, validation and refinement. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2).
+`DiagramEngine` orchestrates prompt construction, LLM calls, parsing, validation and refinement. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2). History uses simple timestamped JSON files with automatic pruning.
 
 ## 📁 Project structure
 
@@ -222,10 +257,10 @@ flowchart TD
 │   ├── __init__.py                # public API: Diagram, DiagramEngine, DiagramRequest
 │   ├── config.py                  # Settings Pydantic model with TOML loader
 │   ├── models.py                  # Diagram & DiagramRequest with validators + to_excalidraw
-│   ├── generator.py               # DiagramEngine (generate, refine, explain)
+│   ├── generator.py               # DiagramEngine (generate, refine, explain, history)
 │   ├── validator.py               # validate_mermaid, sanitize, detect_diagram_type
 │   ├── app.py                     # FastAPI routes + Jinja2 notebook UI
-│   └── cli.py                     # Typer commands: generate, serve, version
+│   └── cli.py                     # Typer commands: generate, serve, history, version
 ├── templates/index.html           # hand-drawn notebook UI (Caveat font, lined paper)
 ├── static/
 │   ├── css/styles.css             # wobbly borders, highlighter accents, sticky notes
@@ -241,13 +276,13 @@ flowchart TD
 pytest
 ```
 
-The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate`, `refine`, `explain`, prompt validation, fallback JSON/markdown parsing, validator integration, error handling, snapshot-style checks for common diagram outputs, and the new `Diagram.to_excalidraw()` method. Ollama calls are fully mocked.
+The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate`, `refine`, `explain`, prompt validation, fallback JSON/markdown parsing, validator integration, error handling, snapshot-style checks for common diagram outputs, the new `Diagram.to_excalidraw()` method, and the new history persistence, listing and loading behaviour. Ollama calls are fully mocked.
 
 ## 📍 Roadmap
 <!-- roadmap:start -->
 - [x] **v0.1.0** — first release: Natural Generation, Notebook UI, AI Refinement, Live Preview
 - [x] Add Excalidraw JSON export with sketchy hand-drawn look
-- [ ] Implement diagram history with simple file-based versioning
+- [x] Implement diagram history with simple file-based versioning
 - [ ] Support PlantUML and Graphviz via additional LLM prompts
 - [ ] Add voice input using whisper for diagram descriptions
 - [ ] Create Obsidian plugin to insert generated diagrams

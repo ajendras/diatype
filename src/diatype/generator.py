@@ -4,12 +4,19 @@ Uses local Ollama models to turn natural language into valid Mermaid
 diagrams. All output is validated, sanitized, and wrapped in a typed
 Diagram model. The engine is designed to be testable (via dependency
 injection of settings) and resilient to imperfect LLM responses.
+
+The engine also maintains simple file-based versioning: every generated
+or refined diagram is saved as a timestamped JSON file in the configured
+history directory. Refinements increment the version number for the same
+diagram ID.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import ollama
@@ -25,6 +32,7 @@ class DiagramEngine:
 
     All heavy lifting (prompt engineering, retry logic, sanitization) lives here
     so the FastAPI layer and CLI stay thin and focused on transport.
+    History persistence is also handled here using simple JSON files.
     """
 
     def __init__(self, settings: Settings | None = None) -> None:
@@ -56,6 +64,7 @@ class DiagramEngine:
         """Generate a fresh diagram from a natural-language description.
 
         The returned Diagram is guaranteed to have passed basic validation.
+        A copy is automatically saved to the history directory.
         """
         if not isinstance(prompt, str) or len(prompt.strip()) < 8:
             raise ValueError("prompt must be a string at least 8 characters long")
@@ -79,7 +88,12 @@ class DiagramEngine:
                 format="json",
             )
             content = response["message"]["content"].strip()
-            diagram = self._parse_llm_response(content, requested_type=request.diagram_type)
+            diagram = self._parse_llm_response(
+                content,
+                requested_type=request.diagram_type,
+                original_prompt=prompt,
+            )
+            self.save_to_history(diagram)
             return diagram
 
         except ollama.ResponseError as exc:
@@ -93,7 +107,11 @@ class DiagramEngine:
             raise RuntimeError(f"Unexpected error during generation: {exc}") from exc
 
     def refine(self, diagram: Diagram, instruction: str) -> Diagram:
-        """Iteratively improve an existing diagram according to a natural-language instruction."""
+        """Iteratively improve an existing diagram according to a natural-language instruction.
+
+        The refined diagram shares the same ID but receives an incremented version number
+        and is saved to history.
+        """
         if not isinstance(diagram, Diagram):
             raise TypeError("diagram must be an instance of Diagram")
         if not isinstance(instruction, str) or len(instruction.strip()) < 3:
@@ -117,12 +135,21 @@ class DiagramEngine:
                 format="json",
             )
             content = response["message"]["content"].strip()
-            updated = self._parse_llm_response(content, requested_type=diagram.diagram_type)
+            updated = self._parse_llm_response(
+                content,
+                requested_type=diagram.diagram_type,
+                original_prompt=instruction,
+                base_id=diagram.id,
+                version=diagram.version + 1,
+            )
 
             # Preserve any already-rendered SVG from the original
             if diagram.svg and not updated.svg:
                 updated.svg = diagram.svg
+            if not updated.original_prompt:
+                updated.original_prompt = diagram.original_prompt
 
+            self.save_to_history(updated)
             return updated
 
         except Exception as exc:
@@ -170,10 +197,18 @@ class DiagramEngine:
                 f"Diagram source:\n{diagram.to_markdown()}"
             )
 
-    def _parse_llm_response(self, content: str, requested_type: str) -> Diagram:
+    def _parse_llm_response(
+        self,
+        content: str,
+        requested_type: str,
+        original_prompt: str = "",
+        base_id: str | None = None,
+        version: int = 1,
+    ) -> Diagram:
         """Convert raw LLM text (JSON or markdown) into a validated Diagram object.
 
         Centralizes all parsing, sanitization, validation and Pydantic construction.
+        History fields are populated here so that each version is correctly tracked.
         """
         # Try strict JSON first (encouraged by the format="json" parameter)
         try:
@@ -214,4 +249,111 @@ class DiagramEngine:
             explanation=explanation.strip() or "No explanation available.",
             diagram_type=detected_type,
             svg="",  # populated by frontend Mermaid renderer
+            original_prompt=original_prompt,
+            id=base_id or f"diag_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            version=version,
         )
+
+    def save_to_history(self, diagram: Diagram) -> None:
+        """Persist a diagram version to the history directory as JSON.
+
+        Uses the diagram's ID and version to produce a deterministic filename.
+        Old entries are pruned according to the configured limit.
+        """
+        if not self.settings.history_enabled:
+            return
+
+        history_dir: Path = self.settings.history_dir
+        try:
+            history_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{diagram.id}_v{diagram.version:02d}.json"
+            filepath = history_dir / filename
+
+            data = diagram.model_dump(mode="json")
+            data["saved_at"] = datetime.now().isoformat()
+
+            filepath.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            self._prune_old_history()
+        except Exception as exc:  # broad to avoid breaking generation on IO errors
+            print(f"Warning: Could not save diagram to history: {exc}")
+
+    def _prune_old_history(self) -> None:
+        """Remove oldest history files when the configured limit is exceeded."""
+        if not self.settings.history_enabled or self.settings.max_history < 1:
+            return
+
+        history_dir: Path = self.settings.history_dir
+        try:
+            files = list(history_dir.glob("*.json"))
+            if len(files) <= self.settings.max_history:
+                return
+            files.sort(key=lambda f: f.stat().st_mtime)
+            for old_file in files[: len(files) - self.settings.max_history]:
+                old_file.unlink(missing_ok=True)
+        except Exception:
+            pass  # never let cleanup break the application
+
+    def list_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return a list of history entries (newest first) for UI/CLI display.
+
+        Only metadata is returned; full diagrams are loaded on demand via load_version.
+        """
+        if not self.settings.history_enabled:
+            return []
+
+        history_dir: Path = self.settings.history_dir
+        if not history_dir.exists():
+            return []
+
+        entries: list[dict[str, Any]] = []
+        try:
+            files = list(history_dir.glob("*_v*.json"))
+            files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+            for file_path in files[:limit]:
+                try:
+                    data = json.loads(file_path.read_text(encoding="utf-8"))
+                    entries.append(
+                        {
+                            "id": data.get("id", ""),
+                            "version": data.get("version", 1),
+                            "title": data.get("title", "Untitled Diagram"),
+                            "diagram_type": data.get("diagram_type", "flowchart"),
+                            "created_at": data.get("created_at") or data.get("saved_at", ""),
+                            "prompt": data.get("original_prompt", "")[:80],
+                            "filename": file_path.name,
+                        }
+                    )
+                except (json.JSONDecodeError, OSError, KeyError):
+                    continue
+            return entries
+        except Exception:
+            return []
+
+    def load_version(self, diagram_id: str, version: int = 1) -> Diagram | None:
+        """Load a specific version of a diagram from the history directory.
+
+        Returns None if the requested file cannot be found or parsed.
+        """
+        if not self.settings.history_enabled:
+            return None
+
+        history_dir: Path = self.settings.history_dir
+        if not history_dir.exists():
+            return None
+
+        # Prefer exact version match
+        exact_path = history_dir / f"{diagram_id}_v{version:02d}.json"
+        candidates = [exact_path] if exact_path.exists() else []
+        if not candidates:
+            candidates = list(history_dir.glob(f"{diagram_id}_v*.json"))
+
+        for candidate in candidates:
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+                return Diagram.model_validate(data)
+            except Exception:
+                continue
+
+        return None

@@ -8,6 +8,7 @@ through the system.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -60,7 +61,8 @@ class Diagram(BaseModel):
     """A complete diagram artifact containing Mermaid source, explanation, and optional SVG.
 
     All fields are validated to guarantee that the diagram can be rendered
-    and explained back to the user.
+    and explained back to the user. New history fields enable simple
+    file-based versioning.
     """
 
     mermaid: str = Field(
@@ -84,6 +86,32 @@ class Diagram(BaseModel):
     diagram_type: str = Field(
         default="flowchart",
         description="Detected or requested diagram type for reference.",
+    )
+
+    id: str = Field(
+        default="",
+        description="Unique ID shared across versions of the same diagram series.",
+    )
+
+    version: int = Field(
+        default=1,
+        ge=1,
+        description="Incremental version number for iterative refinements.",
+    )
+
+    created_at: str = Field(
+        default="",
+        description="ISO 8601 timestamp when this version was created.",
+    )
+
+    original_prompt: str = Field(
+        default="",
+        description="The natural-language prompt used to generate this diagram.",
+    )
+
+    title: str = Field(
+        default="Untitled Diagram",
+        description="Short descriptive title for history listing.",
     )
 
     @field_validator("mermaid")
@@ -117,6 +145,27 @@ class Diagram(BaseModel):
                 "(flowchart, sequenceDiagram, classDiagram, ...)"
             )
         return stripped
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_history_fields(cls, data: Any) -> Any:
+        """Auto-populate history-related fields when not supplied."""
+        if isinstance(data, dict):
+            data = dict(data)  # shallow copy
+            if not data.get("id"):
+                data["id"] = f"diag_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            if not data.get("created_at"):
+                data["created_at"] = datetime.now().isoformat()
+            if not data.get("title") or data.get("title") == "Untitled Diagram":
+                prompt = data.get("original_prompt", "")
+                if prompt:
+                    title = prompt[:35].strip()
+                    data["title"] = title + ("..." if len(prompt) > 35 else "")
+                else:
+                    data["title"] = "Untitled Diagram"
+            if "version" not in data or data.get("version") is None:
+                data["version"] = 1
+        return data
 
     @model_validator(mode="after")
     def ensure_consistent_type(self) -> Diagram:
@@ -386,7 +435,7 @@ class Diagram(BaseModel):
             "y": 60,
             "width": 720,
             "height": 420,
-            "text": self.mermaid or self.explanation,
+            "text": f"{self.title}\n\n{self.mermaid or self.explanation}",
             "fontSize": 17,
             "fontFamily": 3,
             "textAlign": "left",
@@ -418,4 +467,4 @@ class Diagram(BaseModel):
         return super().model_dump(**kwargs)
 
     def __repr__(self) -> str:
-        return f"Diagram(type={self.diagram_type}, mermaid_len={len(self.mermaid)})"
+        return f"Diagram(id={self.id}, v={self.version}, type={self.diagram_type}, mermaid_len={len(self.mermaid)})"

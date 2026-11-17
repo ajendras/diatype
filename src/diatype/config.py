@@ -51,6 +51,23 @@ class Settings(BaseModel):
         description="Directory for exported diagrams (created automatically).",
     )
 
+    history_enabled: bool = Field(
+        default=True,
+        description="Whether to automatically save generated diagrams to versioned history.",
+    )
+
+    max_history: int = Field(
+        default=30,
+        gt=0,
+        le=1000,
+        description="Maximum number of history files to retain (oldest are pruned).",
+    )
+
+    history_dir: Path = Field(
+        default=Path("diagrams/history"),
+        description="Directory for JSON version history files.",
+    )
+
     model_config = ConfigDict(
         extra="ignore",
         validate_assignment=True,
@@ -97,6 +114,13 @@ class Settings(BaseModel):
         except OSError as exc:
             print(f"Warning: Could not create output directory {settings.output_dir}: {exc}")
 
+        # Ensure history directory exists when enabled
+        if settings.history_enabled:
+            try:
+                settings.history_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                print(f"Warning: Could not create history directory {settings.history_dir}: {exc}")
+
         return settings
 
     def get_ollama_options(self) -> dict[str, Any]:
@@ -111,5 +135,6 @@ class Settings(BaseModel):
         return (
             f"Settings(model={self.ollama_model}, "
             f"temp={self.temperature}, "
-            f"default_type={self.default_diagram_type})"
+            f"default_type={self.default_diagram_type}, "
+            f"history={self.history_enabled})"
         )
