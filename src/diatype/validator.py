@@ -36,135 +36,94 @@ def validate_mermaid(code: str) -> bool:
         TypeError: if code is not a string.
     """
     if not isinstance(code, str):
-        raise TypeError("validate_mermaid() expects a str, got " f"{type(code).__name__}")
+        raise TypeError(f"validate_mermaid() expects a str, got {type(code).__name__}")
 
-    stripped = code.strip()
-    if not stripped:
+    code = code.strip()
+    if len(code) < 5:  # too short for a diagram
         return False
 
-    if len(stripped) < 12:
+    lowered = code.lower()
+
+    # Must start with a valid diagram type (graph is alias for flowchart)
+    if not any(lowered.startswith(start) for start in _VALID_DIAGRAM_STARTS):
+        if not lowered.startswith("graph"):
+            return False
+
+    # Should contain some content indicators unless it's a very simple chart
+    has_content = any(ind in lowered for ind in _CONTENT_INDICATORS)
+    if not has_content and not any(
+        t in lowered for t in ("pie", "gantt", "mindmap", "timeline")
+    ):
         return False
 
-    first_token = stripped.split(maxsplit=1)[0].lower()
-    if not any(start in first_token for start in _VALID_DIAGRAM_STARTS):
-        return False
-
-    # Most diagrams need at least one relationship or container.
-    # We are deliberately lenient for pie charts, gantt, etc.
-    has_structure = any(ind in stripped for ind in _CONTENT_INDICATORS)
-    if not has_structure and not any(t in first_token for t in ("pie", "gantt", "mindmap")):
-        return False
-
-    # Security sanity check - never allow script injection that could
-    # become dangerous when the SVG is later rendered.
-    dangerous = {"<script", "javascript:", "onerror=", "onload=", "eval("}
-    lowered = stripped.lower()
-    if any(d in lowered for d in dangerous):
+    # Security: block potential XSS or dangerous constructs
+    dangerous = re.compile(
+        r"(?i)(<script|javascript:|on(load|error|click|mouseover)|"
+        r"eval\(|alert\(|document\.|window\.)"
+    )
+    if dangerous.search(code):
         return False
 
     return True
 
 
 def sanitize(code: str) -> str:
-    """Extract and clean pure Mermaid source from LLM output.
-
-    Removes:
-      * Markdown code fences (```mermaid ... ```)
-      * Common explanatory prefixes ("Here is the diagram:", etc.)
-      * Excessive whitespace
-
-    Returns a clean, ready-to-render Mermaid string.
-
-    Raises:
-        TypeError: if code is not a string.
+    """Remove common artifacts from LLM responses such as markdown code fences,
+    JSON wrappers, and excessive whitespace.
     """
     if not isinstance(code, str):
-        raise TypeError("sanitize() expects a str, got " f"{type(code).__name__}")
-
-    if not code.strip():
         return ""
 
-    # Strip markdown code blocks (with or without "mermaid" label)
-    code = re.sub(r"```(?:mermaid)?\s*", "", code, flags=re.IGNORECASE)
-    code = re.sub(r"\s*```$", "", code, flags=re.IGNORECASE)
+    # Remove markdown code blocks
+    code = re.sub(r"^```(?:mermaid)?\s*\n?", "", code, flags=re.MULTILINE)
+    code = re.sub(r"\n?```\s*$", "", code, flags=re.MULTILINE)
 
-    # Remove common LLM framing text
-    code = re.sub(
-        r"^(?:here|this|below|the|output).*?(?:diagram|code|syntax|is|:)\s*",
-        "",
-        code,
-        flags=re.IGNORECASE | re.MULTILINE,
-    )
+    # Remove any json-like wrappers that sometimes leak from the model
+    code = re.sub(r'^\s*\{\s*"mermaid"\s*:\s*["\']', "", code)
+    code = re.sub(r'["\']?\s*,\s*"explanation".*$', "", code, flags=re.DOTALL)
 
-    # Normalize whitespace: keep intentional indentation but remove empty lines
-    lines: list[str] = []
-    for line in code.splitlines():
-        stripped_line = line.rstrip()
-        if stripped_line:
-            lines.append(stripped_line)
+    # General cleanup
+    code = code.strip().strip('"').strip("'").strip("`")
 
-    cleaned = "\n".join(lines).strip()
+    # Normalize line endings and trailing spaces
+    code = "\n".join(line.rstrip() for line in code.splitlines() if line.strip())
 
-    # Final safety: if the result still contains a full JSON object (rare),
-    # attempt to pull the mermaid field out.
-    if cleaned.startswith("{") and '"mermaid"' in cleaned:
-        import json
-
-        try:
-            parsed = json.loads(cleaned)
-            if isinstance(parsed, dict) and "mermaid" in parsed:
-                cleaned = str(parsed["mermaid"])
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-    return cleaned
+    return code
 
 
-def detect_diagram_type(code: str) -> str:
-    """Return the standardized Mermaid diagram type from source text.
+def detect_diagram_type(code: str) -> str | None:
+    """Detect the diagram type from the Mermaid source.
 
-    Inspects the first line only. Falls back to 'flowchart' for any
-    unrecognized or ambiguous diagram.
-
-    Raises:
-        TypeError: if code is not a string.
+    Returns the canonical name (as used by Mermaid and the rest of the
+    codebase) or None if it cannot be determined. This allows callers
+    to fall back to a requested_type.
     """
-    if not isinstance(code, str):
-        raise TypeError("detect_diagram_type() expects a str, got " f"{type(code).__name__}")
+    if not isinstance(code, str) or not code or not code.strip():
+        return None
 
-    stripped = code.strip()
-    if not stripped:
+    first_line = code.strip().split("\n")[0].strip().lower()
+
+    if "flowchart" in first_line or first_line.startswith("graph"):
         return "flowchart"
 
-    first_line = stripped.split("\n", 1)[0].lower()
-
-    mapping = {
-        "flowchart": "flowchart",
-        "graph": "flowchart",
+    type_map: dict[str, str] = {
         "sequencediagram": "sequenceDiagram",
-        "sequence diagram": "sequenceDiagram",
         "classdiagram": "classDiagram",
-        "class diagram": "classDiagram",
         "statediagram": "stateDiagram",
-        "state diagram": "stateDiagram",
         "erdiagram": "erDiagram",
-        "er diagram": "erDiagram",
         "journey": "journey",
         "gantt": "gantt",
         "pie": "pie",
         "quadrantchart": "quadrantChart",
-        "quadrant chart": "quadrantChart",
         "requirementdiagram": "requirementDiagram",
         "mindmap": "mindmap",
         "timeline": "timeline",
         "gitgraph": "gitGraph",
-        "git graph": "gitGraph",
         "c4diagram": "c4Diagram",
-        "c4 diagram": "c4Diagram",
     }
 
-    for keyword, diagram_type in mapping.items():
-        if keyword in first_line:
-            return diagram_type
+    for key, canonical in type_map.items():
+        if key in first_line or canonical.lower() in first_line:
+            return canonical
 
-    return "flowchart"
+    return None
