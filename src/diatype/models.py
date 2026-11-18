@@ -31,9 +31,16 @@ class DiagramRequest(BaseModel):
 
     diagram_type: str = Field(
         default="flowchart",
-        pattern=r"^(flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|mindmap|timeline|gitGraph|c4Diagram)$",
-        description="Mermaid diagram type. Must be one of the supported Mermaid diagram kinds.",
-        examples=["flowchart", "sequenceDiagram"],
+        pattern=r"^(flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|mindmap|timeline|gitGraph|c4Diagram|sequence|class|activity|state|component|object|deployment)$",
+        description="Diagram kind hint. Must be one of the supported values (Mermaid kinds or common PlantUML/Graphviz equivalents).",
+        examples=["flowchart", "sequenceDiagram", "sequence"],
+    )
+
+    format: str = Field(
+        default="mermaid",
+        pattern=r"^(mermaid|plantuml|graphviz)$",
+        description="Output format: mermaid (default), plantuml or graphviz.",
+        examples=["mermaid", "plantuml", "graphviz"],
     )
 
     @field_validator("prompt")
@@ -54,22 +61,28 @@ class DiagramRequest(BaseModel):
         return self
 
     def __str__(self) -> str:
-        return f"DiagramRequest(type={self.diagram_type}, prompt={self.prompt[:60]}...)"
+        return f"DiagramRequest(type={self.diagram_type}, format={self.format}, prompt={self.prompt[:60]}...)"
 
 
 class Diagram(BaseModel):
-    """A complete diagram artifact containing Mermaid source, explanation, and optional SVG.
+    """A complete diagram artifact containing source code, explanation, and optional SVG.
 
     All fields are validated to guarantee that the diagram can be rendered
     and explained back to the user. New history fields enable simple
     file-based versioning.
     """
 
-    mermaid: str = Field(
+    source: str = Field(
         ...,
         min_length=10,
-        description="Valid Mermaid diagram syntax. Must start with a valid diagram keyword.",
+        description="Diagram source code in the chosen format (Mermaid, PlantUML or Graphviz DOT). Must start with a valid directive.",
         examples=["flowchart TD\n    A[Start] --> B[Process]"],
+    )
+
+    format: str = Field(
+        default="mermaid",
+        pattern=r"^(mermaid|plantuml|graphviz)$",
+        description="The output format/language of the diagram source.",
     )
 
     explanation: str = Field(
@@ -114,14 +127,21 @@ class Diagram(BaseModel):
         description="Short descriptive title for history listing.",
     )
 
-    @field_validator("mermaid")
+    @field_validator("source")
     @classmethod
-    def validate_mermaid_starts_correctly(cls, v: str) -> str:
-        """Ensure the Mermaid code begins with a recognized diagram directive.
+    def validate_source_starts_correctly(cls, v: str) -> str:
+        """Ensure the source code begins with a valid directive for its format.
 
         This is a lightweight syntactic sanity check before sending to the validator.
         """
         stripped = v.strip()
+        lowered = stripped.lower()
+        if (
+            lowered.startswith("@startuml")
+            or any(lowered.startswith(s) for s in ("digraph", "graph ", "strict "))
+        ):
+            return stripped
+
         valid_starts = (
             "flowchart",
             "graph",
@@ -139,19 +159,23 @@ class Diagram(BaseModel):
             "gitGraph",
             "c4Diagram",
         )
-        if not any(stripped.startswith(start) for start in valid_starts):
+        if not any(lowered.startswith(start.lower()) for start in valid_starts):
             raise ValueError(
-                "Mermaid code must start with a valid diagram type "
-                "(flowchart, sequenceDiagram, classDiagram, ...)"
+                "Source must start with a valid directive for the format "
+                "(flowchart, @startuml, digraph, etc.)"
             )
         return stripped
 
     @model_validator(mode="before")
     @classmethod
     def populate_history_fields(cls, data: Any) -> Any:
-        """Auto-populate history-related fields when not supplied."""
+        """Auto-populate history-related fields when not supplied and handle legacy mermaid field."""
         if isinstance(data, dict):
             data = dict(data)  # shallow copy
+            if "mermaid" in data and "source" not in data:
+                data["source"] = data.pop("mermaid")
+            if not data.get("format"):
+                data["format"] = "mermaid"
             if not data.get("id"):
                 data["id"] = f"diag_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             if not data.get("created_at"):
@@ -169,9 +193,12 @@ class Diagram(BaseModel):
 
     @model_validator(mode="after")
     def ensure_consistent_type(self) -> Diagram:
-        """Derive diagram_type from the mermaid source if not explicitly set."""
-        if not self.diagram_type or self.diagram_type == "flowchart":
-            first_line = self.mermaid.split("\n", 1)[0].strip()
+        """Derive diagram_type from the source if not explicitly set (Mermaid only)."""
+        if (
+            self.format == "mermaid"
+            and (not self.diagram_type or self.diagram_type == "flowchart")
+        ):
+            first_line = self.source.split("\n", 1)[0].strip()
             for candidate in (
                 "sequenceDiagram",
                 "classDiagram",
@@ -192,18 +219,26 @@ class Diagram(BaseModel):
 
     def is_renderable(self) -> bool:
         """Return True if this diagram has both source and (optionally) SVG."""
-        return bool(self.mermaid and self.mermaid.strip())
+        return bool(self.source and self.source.strip())
 
     def to_markdown(self) -> str:
-        """Return a Markdown code block suitable for embedding in docs."""
-        return f"```mermaid\n{self.mermaid}\n```"
+        """Return a Markdown code block suitable for embedding in docs.
+
+        Uses the correct fence label for the chosen format.
+        """
+        fence = {
+            "mermaid": "mermaid",
+            "plantuml": "plantuml",
+            "graphviz": "dot",
+        }.get(self.format, self.format)
+        return f"```{fence}\n{self.source}\n```"
 
     def to_excalidraw(self) -> dict[str, Any]:
         """Return Excalidraw v2 scene JSON with sketchy hand-drawn styling.
 
         Flowcharts are parsed into rectangles, text (Virgil fontFamily=3)
         and arrows. All shapes use roughness=2 and slight angles for a
-        natural hand-drawn look. Other diagram types fall back to a large
+        natural hand-drawn look. Other diagram types/formats fall back to a large
         text block.
         """
         elements: list[dict[str, Any]] = []
@@ -229,7 +264,9 @@ class Diagram(BaseModel):
             "frameId": None,
         }
 
-        if any(k in self.diagram_type.lower() for k in ("flowchart", "graph")):
+        if self.format == "mermaid" and any(
+            k in self.diagram_type.lower() for k in ("flowchart", "graph")
+        ):
             elements.extend(self._flowchart_to_excalidraw(sketch_style))
         else:
             elements.append(self._fallback_text_element())
@@ -254,7 +291,7 @@ class Diagram(BaseModel):
 
         # Extract nodes: ID[Label], ID(Label), ID{Label}
         node_pattern = r"([A-Za-z0-9_]+)\s*([\[{\(])(.+?)([\]}\)])"
-        node_matches = re.findall(node_pattern, self.mermaid)
+        node_matches = re.findall(node_pattern, self.source)
         node_dict: dict[str, str] = {}
         for node_id, _, label, _ in node_matches:
             if node_id not in node_dict:
@@ -262,7 +299,7 @@ class Diagram(BaseModel):
 
         # Extract edges (supports --> |label| and similar)
         edge_pattern = r"([A-Za-z0-9_]+)\s*(?:--+|==+)>[\|]?(.*?)[\|]?\s*([A-Za-z0-9_]+)"
-        edge_matches = re.findall(edge_pattern, self.mermaid)
+        edge_matches = re.findall(edge_pattern, self.source)
         edges = [(src, tgt, lbl.strip()) for src, lbl, tgt in edge_matches]
 
         # Simple staggered layout
@@ -427,7 +464,7 @@ class Diagram(BaseModel):
         return elements
 
     def _fallback_text_element(self) -> dict[str, Any]:
-        """Large text block fallback for non-flowchart diagrams."""
+        """Large text block fallback for non-flowchart diagrams or non-Mermaid formats."""
         return {
             "id": "fallback-text",
             "type": "text",
@@ -435,7 +472,7 @@ class Diagram(BaseModel):
             "y": 60,
             "width": 720,
             "height": 420,
-            "text": f"{self.title}\n\n{self.mermaid or self.explanation}",
+            "text": f"{self.title}\n\n{self.source or self.explanation}",
             "fontSize": 17,
             "fontFamily": 3,
             "textAlign": "left",
@@ -467,4 +504,4 @@ class Diagram(BaseModel):
         return super().model_dump(**kwargs)
 
     def __repr__(self) -> str:
-        return f"Diagram(id={self.id}, v={self.version}, type={self.diagram_type}, mermaid_len={len(self.mermaid)})"
+        return f"Diagram(id={self.id}, v={self.version}, format={self.format}, type={self.diagram_type}, source_len={len(self.source)})"

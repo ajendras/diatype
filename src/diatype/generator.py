@@ -1,7 +1,7 @@
 """Diagram generation and refinement engine for DiaType.
 
-Uses local Ollama models to turn natural language into valid Mermaid
-diagrams. All output is validated, sanitized, and wrapped in a typed
+Uses local Ollama models to turn natural language into valid Mermaid,
+PlantUML or Graphviz diagrams. All output is validated, sanitized, and wrapped in a typed
 Diagram model. The engine is designed to be testable (via dependency
 injection of settings) and resilient to imperfect LLM responses.
 
@@ -24,54 +24,95 @@ from pydantic import ValidationError
 
 from .config import Settings
 from .models import Diagram, DiagramRequest
-from .validator import detect_diagram_type, sanitize, validate_mermaid
+from .validator import detect_diagram_type, sanitize, validate_source
 
 
 class DiagramEngine:
     """Orchestrates prompt construction, LLM calls, parsing, validation and refinement.
 
-    All heavy lifting (prompt engineering, retry logic, sanitization) lives here
+    All heavy lifting (prompt engineering per format, retry logic, sanitization) lives here
     so the FastAPI layer and CLI stay thin and focused on transport.
     History persistence is also handled here using simple JSON files.
     """
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings.load()
-        self._system_prompt = self._build_system_prompt()
 
-    def _build_system_prompt(self) -> str:
-        """High-precision system prompt that steers the model toward
-        structured JSON output containing valid Mermaid.
-        """
-        return (
-            "You are an expert Mermaid.js diagramming assistant. "
-            "Your responses must be valid JSON with exactly two fields: "
-            "'mermaid' (the complete diagram source) and 'explanation' "
-            "(a concise plain-English description, 2-4 sentences).\n\n"
-            "Rules:\n"
-            "1. The mermaid field MUST start with a valid diagram type "
-            "(flowchart, sequenceDiagram, classDiagram, etc.).\n"
-            "2. Use clear, descriptive node labels. Prefer --> for relationships.\n"
-            "3. Never add extra commentary outside the JSON object.\n"
-            "4. Keep the diagram layout logical (TD/LR as appropriate).\n"
-            "5. For refinements, preserve as much of the original structure as possible.\n\n"
-            "Example response:\n"
-            '{"mermaid": "flowchart TD\\n    A[User] --> B[Login]\\n    B --> C[Database]", '
-            '"explanation": "This flowchart shows a simple user login flow with a database."}'
-        )
+    def _build_system_prompt(self, output_format: str = "mermaid") -> str:
+        """High-precision system prompt tailored to the requested output format."""
+        if output_format == "mermaid":
+            return (
+                "You are an expert Mermaid.js diagramming assistant. "
+                "Your responses must ALWAYS be valid JSON with exactly two fields: "
+                "'source' (the complete Mermaid diagram source) and 'explanation' "
+                "(a concise plain-English description, 2-4 sentences).\n\n"
+                "Rules:\n"
+                "1. The source MUST start with a valid diagram type "
+                "(flowchart, sequenceDiagram, classDiagram, etc.).\n"
+                "2. Use clear, descriptive node labels. Prefer --> for relationships.\n"
+                "3. Never add extra commentary outside the JSON object.\n"
+                "4. Keep the diagram layout logical (TD/LR as appropriate).\n"
+                "5. For refinements, preserve as much of the original structure as possible.\n\n"
+                "Example response:\n"
+                '{"source": "flowchart TD\\n    A[User] --> B[Login]\\n    B --> C[Database]", '
+                '"explanation": "This flowchart shows a simple user login flow with a database."}'
+            )
+        if output_format == "plantuml":
+            return (
+                "You are an expert PlantUML diagramming assistant. "
+                "Your responses must ALWAYS be valid JSON with exactly two fields: "
+                "'source' (the complete PlantUML source starting with @startuml and ending with @enduml) "
+                "and 'explanation' (a concise plain-English description, 2-4 sentences).\n\n"
+                "Rules:\n"
+                "1. Always include @startuml and @enduml.\n"
+                "2. Choose the correct diagram type (sequence, class, activity, component, etc.) "
+                "based on the request.\n"
+                "3. Use clear participants, arrows (->), notes where appropriate.\n"
+                "4. Never add extra commentary outside the JSON object.\n"
+                "5. For refinements, preserve as much of the original structure as possible.\n\n"
+                "Example response:\n"
+                '{"source": "@startuml\\nparticipant User\\nUser -> Auth: login()\\nAuth --> User: token\\n@enduml", '
+                '"explanation": "This sequence diagram shows a user authentication flow."}'
+            )
+        if output_format == "graphviz":
+            return (
+                "You are an expert Graphviz (DOT) diagramming assistant. "
+                "Your responses must ALWAYS be valid JSON with exactly two fields: "
+                "'source' (the complete DOT source starting with digraph or graph) "
+                "and 'explanation' (a concise plain-English description, 2-4 sentences).\n\n"
+                "Rules:\n"
+                "1. Use digraph for directed graphs or graph for undirected.\n"
+                "2. Include rankdir=LR/TB when it improves readability.\n"
+                "3. Use clear node and edge labels.\n"
+                "4. Never add extra commentary outside the JSON object.\n"
+                "5. For refinements, preserve as much of the original structure as possible.\n\n"
+                "Example response:\n"
+                '{"source": "digraph G {\\n  rankdir=LR;\\n  User -> Auth [label=\\"login\\"];\\n  Auth -> Service;\\n}", '
+                '"explanation": "This directed graph shows authentication and service routing."}'
+            )
+        # fallback
+        return self._build_system_prompt("mermaid")
 
-    def generate(self, prompt: str, diagram_type: str = "flowchart") -> Diagram:
+    def generate(
+        self, prompt: str, diagram_type: str = "flowchart", output_format: str | None = None
+    ) -> Diagram:
         """Generate a fresh diagram from a natural-language description.
 
-        The returned Diagram is guaranteed to have passed basic validation.
+        The returned Diagram is guaranteed to have passed basic validation for the chosen format.
         A copy is automatically saved to the history directory.
         """
         if not isinstance(prompt, str) or len(prompt.strip()) < 8:
             raise ValueError("prompt must be a string at least 8 characters long")
 
-        request = DiagramRequest(prompt=prompt, diagram_type=diagram_type)
+        if output_format is None:
+            output_format = self.settings.default_format
+
+        request = DiagramRequest(
+            prompt=prompt, diagram_type=diagram_type, format=output_format
+        )
 
         user_content = (
+            f"Output format: {request.format}\n"
             f"Diagram type: {request.diagram_type}\n\n"
             f"Description: {request.prompt}\n\n"
             "Produce the diagram now."
@@ -81,7 +122,7 @@ class DiagramEngine:
             response = ollama.chat(
                 model=self.settings.ollama_model,
                 messages=[
-                    {"role": "system", "content": self._system_prompt},
+                    {"role": "system", "content": self._build_system_prompt(request.format)},
                     {"role": "user", "content": user_content},
                 ],
                 options=self.settings.get_ollama_options(),
@@ -91,6 +132,7 @@ class DiagramEngine:
             diagram = self._parse_llm_response(
                 content,
                 requested_type=request.diagram_type,
+                output_format=request.format,
                 original_prompt=prompt,
             )
             self.save_to_history(diagram)
@@ -117,18 +159,20 @@ class DiagramEngine:
         if not isinstance(instruction, str) or len(instruction.strip()) < 3:
             raise ValueError("instruction must be at least 3 characters")
 
+        output_format = diagram.format
         user_content = (
+            f"Output format: {output_format}\n"
             f"Current diagram (type: {diagram.diagram_type}):\n\n"
-            f"{diagram.mermaid}\n\n"
+            f"{diagram.source}\n\n"
             f"Instruction: {instruction}\n\n"
-            "Return an updated version using the same JSON format."
+            "Return an updated version using the same JSON format with 'source' and 'explanation'."
         )
 
         try:
             response = ollama.chat(
                 model=self.settings.ollama_model,
                 messages=[
-                    {"role": "system", "content": self._system_prompt},
+                    {"role": "system", "content": self._build_system_prompt(output_format)},
                     {"role": "user", "content": user_content},
                 ],
                 options=self.settings.get_ollama_options(),
@@ -138,6 +182,7 @@ class DiagramEngine:
             updated = self._parse_llm_response(
                 content,
                 requested_type=diagram.diagram_type,
+                output_format=output_format,
                 original_prompt=instruction,
                 base_id=diagram.id,
                 version=diagram.version + 1,
@@ -163,13 +208,13 @@ class DiagramEngine:
         if not isinstance(diagram, Diagram):
             raise TypeError("diagram must be an instance of Diagram")
         if not diagram.is_renderable():
-            raise ValueError("Cannot explain a diagram with empty mermaid source")
+            raise ValueError("Cannot explain a diagram with empty source")
 
         prompt = (
-            f"Explain the following {diagram.diagram_type} diagram in clear, "
+            f"Explain the following {diagram.diagram_type} ({diagram.format}) diagram in clear, "
             f"non-technical English. Focus on what the diagram shows, the "
             f"relationships, and the overall meaning.\n\n"
-            f"{diagram.mermaid}\n\n"
+            f"{diagram.source}\n\n"
             "Be concise (3-5 sentences)."
         )
 
@@ -201,6 +246,7 @@ class DiagramEngine:
         self,
         content: str,
         requested_type: str,
+        output_format: str = "mermaid",
         original_prompt: str = "",
         base_id: str | None = None,
         version: int = 1,
@@ -214,15 +260,17 @@ class DiagramEngine:
         try:
             parsed = json.loads(content)
             if isinstance(parsed, dict):
-                raw_mermaid = parsed.get("mermaid", "")
+                raw_source = parsed.get("source") or parsed.get(
+                    "mermaid", parsed.get("plantuml", parsed.get("dot", ""))
+                )
                 explanation = parsed.get("explanation", "")
             else:
-                raw_mermaid = content
+                raw_source = content
                 explanation = "No explanation provided by model."
         except json.JSONDecodeError:
             # Fallback: extract with regex (handles markdown-wrapped answers)
-            mermaid_match = re.search(
-                r'"?mermaid"?\s*[:=]\s*["\'](.*?)["\'](?:,|\s*\})',
+            source_match = re.search(
+                r'"?(?:source|mermaid|plantuml|dot)"?\s*[:=]\s*["\'](.*?)["\'](?:,|\s*\})',
                 content,
                 re.DOTALL,
             )
@@ -231,23 +279,28 @@ class DiagramEngine:
                 content,
                 re.DOTALL,
             )
-            raw_mermaid = mermaid_match.group(1) if mermaid_match else content
+            raw_source = source_match.group(1) if source_match else content
             explanation = expl_match.group(1) if expl_match else "Diagram generated from your description."
 
-        clean_mermaid = sanitize(raw_mermaid)
+        clean_source = sanitize(raw_source, output_format)
 
-        if not validate_mermaid(clean_mermaid):
+        if not validate_source(clean_source, output_format):
             raise ValueError(
-                "The generated diagram failed basic validation. "
+                f"The generated {output_format} diagram failed basic validation. "
                 "Please rephrase your request with more detail."
             )
 
-        detected_type = detect_diagram_type(clean_mermaid) or requested_type
+        detected_type = (
+            detect_diagram_type(clean_source) or requested_type
+            if output_format == "mermaid"
+            else requested_type
+        )
 
         return Diagram(
-            mermaid=clean_mermaid,
+            source=clean_source,
             explanation=explanation.strip() or "No explanation available.",
             diagram_type=detected_type,
+            format=output_format,
             svg="",  # populated by frontend Mermaid renderer
             original_prompt=original_prompt,
             id=base_id or f"diag_{datetime.now().strftime('%Y%m%d_%H%M%S')}",

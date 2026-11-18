@@ -17,7 +17,7 @@ class Settings(BaseModel):
     """Application settings with TOML loading and diagram-friendly defaults.
 
     Defaults are chosen for reliability (low temperature) and compatibility
-    with common Ollama models that understand Mermaid syntax well.
+    with common Ollama models that understand Mermaid/PlantUML/Graphviz syntax well.
     """
 
     ollama_model: str = Field(
@@ -35,8 +35,14 @@ class Settings(BaseModel):
 
     default_diagram_type: str = Field(
         default="flowchart",
-        pattern=r"^(flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|mindmap|timeline|gitGraph|c4Diagram)$",
-        description="Default Mermaid diagram kind when not specified.",
+        pattern=r"^(flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|mindmap|timeline|gitGraph|c4Diagram|sequence|class|activity|state|component|object|deployment)$",
+        description="Default diagram kind hint (used for all formats).",
+    )
+
+    default_format: str = Field(
+        default="mermaid",
+        pattern=r"^(mermaid|plantuml|graphviz)$",
+        description="Default output format. Additional LLM prompts are used for PlantUML and Graphviz.",
     )
 
     max_tokens: int = Field(
@@ -136,5 +142,6 @@ class Settings(BaseModel):
             f"Settings(model={self.ollama_model}, "
             f"temp={self.temperature}, "
             f"default_type={self.default_diagram_type}, "
+            f"default_format={self.default_format}, "
             f"history={self.history_enabled})"
         )

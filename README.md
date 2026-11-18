@@ -21,9 +21,9 @@
 
 ## ✨ Why DiaType?
 
-Creating and updating technical diagrams is tedious and error-prone. Existing tools force you to learn complex syntax or send sensitive data to the cloud. DiaType lets developers, architects, and technical writers describe what they need in plain English, instantly receive valid Mermaid diagrams, and keep everything local, private, and version-controlled inside a delightful hand-drawn notebook interface.
+Creating and updating technical diagrams is tedious and error-prone. Existing tools force you to learn complex syntax or send sensitive data to the cloud. DiaType lets developers, architects, and technical writers describe what they need in plain English, instantly receive valid Mermaid/PlantUML/Graphviz diagrams, and keep everything local, private, and version-controlled inside a delightful hand-drawn notebook interface.
 
-- **Natural language to diagrams** — describe any process or structure and get clean, valid Mermaid instantly via local Ollama
+- **Natural language to diagrams** — describe any process or structure and get clean, valid Mermaid, PlantUML or Graphviz via local Ollama
 - **Iterative refinement** — tell the model to "add error handling" or "make the layout left-to-right" without rewriting prompts
 - **Hand-drawn notebook UI** — lined paper, Caveat handwriting font, wobbly borders and highlighter accents create a familiar sketchbook feel
 - **Zero cloud, fully editable** — live Mermaid preview, one-click SVG/PNG/PDF export, and CLI companion for scripts and CI
@@ -39,7 +39,7 @@ Creating and updating technical diagrams is tedious and error-prone. Existing to
 <td align="center" valign="top" width="33%">
 🤖<br>
 <b>Natural Generation</b><br>
-Describe any diagram in plain English; receive valid Mermaid via Ollama
+Describe any diagram in plain English; receive valid Mermaid, PlantUML or Graphviz via Ollama (specialized prompts per format)
 </td>
 <td align="center" valign="top" width="33%">
 📓<br>
@@ -116,11 +116,20 @@ import json
 engine = DiagramEngine(Settings.load())
 diagram = engine.generate(
     "User logs in via OAuth, then the API gateway routes to an order service backed by PostgreSQL",
-    diagram_type="flowchart"
+    diagram_type="flowchart",
+    output_format="mermaid"
 )
 
 print(diagram.to_markdown())
 print("\nExplanation:", diagram.explanation)
+
+# New: PlantUML support via dedicated LLM prompt
+puml = engine.generate(
+    "User authenticates with service then retrieves order",
+    diagram_type="sequence",
+    output_format="plantuml"
+)
+print("\nPlantUML:\n", puml.to_markdown())
 
 # New: export with sketchy hand-drawn styling for Excalidraw
 with open("login_flow.excalidraw", "w") as f:
@@ -132,15 +141,19 @@ for entry in engine.list_history(limit=5):
     print(f"• {entry['title']} (v{entry['version']}) at {entry['created_at'][:16]}")
 ```
 
-The returned `Diagram` object is guaranteed to contain validated Mermaid syntax.
+The returned `Diagram` object is guaranteed to contain validated syntax for the chosen format.
 
 ## 🧰 Usage
 
-**CLI one-liner** (creates both `.mmd` and `.md` files):
+**CLI one-liner** (creates both `.mmd`/`.puml`/`.dot` and `.md` files):
 
 ```bash
 diatype generate "microservice architecture with API gateway, auth and payment services" \
-  --type flowchart --output diagrams/architecture --explain
+  --type flowchart --format mermaid --output diagrams/architecture --explain
+
+# PlantUML or Graphviz via dedicated prompts
+diatype generate "user login sequence" --type sequence --format plantuml --output diagrams/login
+diatype generate "dependency graph of services" --type graph --format graphviz --output diagrams/deps
 ```
 
 **Refining an existing diagram** (Python):
@@ -158,7 +171,7 @@ print(refined.to_markdown())
 
 **Diagram history & versioning**
 
-Every generated or refined diagram is automatically saved as a versioned JSON file (including full metadata, Mermaid source, explanation and prompt). History lives in `./diagrams/history/` (configurable via `config.toml`).
+Every generated or refined diagram is automatically saved as a versioned JSON file (including full metadata, source, explanation and prompt). History lives in `./diagrams/history/` (configurable via `config.toml`).
 
 ```python
 # List recent diagrams
@@ -203,7 +216,7 @@ diatype serve --host 0.0.0.0 --port 8080 --reload
 ```bash
 curl -X POST http://127.0.0.1:8000/api/generate \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "sequence of a CI pipeline", "diagram_type": "sequenceDiagram"}'
+  -d '{"prompt": "sequence of a CI pipeline", "diagram_type": "sequenceDiagram", "format": "mermaid"}'
 ```
 
 The `/api/refine`, `/api/explain`, `/api/excalidraw`, `/api/history` and `/api/load_version` endpoints are available. All routes are defined in `src/diatype/app.py`.
@@ -218,6 +231,7 @@ DiaType loads settings from `config.toml` (or falls back to defaults). The `Sett
 | `ollama_model`        | `llama3.2`               | Ollama model tag. Smaller instruction-tuned models work best. |
 | `temperature`         | `0.2`                    | Lower values yield more deterministic diagram syntax (0.0-0.7). |
 | `default_diagram_type`| `flowchart`              | One of the supported Mermaid kinds (validated by regex). |
+| `default_format`      | `mermaid`                | Output format: mermaid (default), plantuml or graphviz. Uses additional tailored LLM prompts for the latter two. |
 | `max_tokens`          | `2500`                   | Maximum tokens requested from the model. |
 | `output_dir`          | `diagrams`               | Directory for exported files (created automatically). |
 | `history_enabled`     | `true`                   | Whether to automatically save diagrams to versioned history. |
@@ -235,8 +249,8 @@ flowchart TD
     CLI --> Engine["DiagramEngine (generator.py)"]
     UI --> FastAPI["FastAPI (/api/generate, /api/refine, /api/explain)"]
     FastAPI --> Engine
-    Engine -->|system + user prompt| Ollama["Ollama (local LLM)"]
-    Ollama -->|JSON response| Validator["validator.py (sanitize, validate_mermaid, detect_diagram_type)"]
+    Engine -->|format-aware system prompt| Ollama["Ollama (local LLM)"]
+    Ollama -->|JSON response| Validator["validator.py (sanitize, validate_source per format)"]
     Validator --> Diagram["Diagram model (models.py)"]
     Diagram -->|save/load| History["diagrams/history/ (JSON versions)"]
     Diagram -->|mermaid| Renderer["Mermaid.js (live preview)"]
@@ -245,7 +259,7 @@ flowchart TD
     Config["config.py (Settings)"] --> Engine
 ```
 
-`DiagramEngine` orchestrates prompt construction, LLM calls, parsing, validation and refinement. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2). History uses simple timestamped JSON files with automatic pruning.
+`DiagramEngine` orchestrates prompt construction, LLM calls, parsing, validation and refinement. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2). History uses simple timestamped JSON files with automatic pruning. PlantUML and Graphviz are supported via dedicated system prompts that instruct the LLM to emit the appropriate syntax inside the shared JSON schema (`source` + `explanation`).
 
 ## 📁 Project structure
 
@@ -258,7 +272,7 @@ flowchart TD
 │   ├── config.py                  # Settings Pydantic model with TOML loader
 │   ├── models.py                  # Diagram & DiagramRequest with validators + to_excalidraw
 │   ├── generator.py               # DiagramEngine (generate, refine, explain, history)
-│   ├── validator.py               # validate_mermaid, sanitize, detect_diagram_type
+│   ├── validator.py               # validate_source (mermaid/plantuml/graphviz), sanitize, detect_diagram_type
 │   ├── app.py                     # FastAPI routes + Jinja2 notebook UI
 │   └── cli.py                     # Typer commands: generate, serve, history, version
 ├── templates/index.html           # hand-drawn notebook UI (Caveat font, lined paper)
@@ -276,14 +290,14 @@ flowchart TD
 pytest
 ```
 
-The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate`, `refine`, `explain`, prompt validation, fallback JSON/markdown parsing, validator integration, error handling, snapshot-style checks for common diagram outputs, the new `Diagram.to_excalidraw()` method, and the new history persistence, listing and loading behaviour. Ollama calls are fully mocked.
+The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate` (including new PlantUML/Graphviz paths), `refine`, `explain`, prompt validation, fallback JSON/markdown parsing, validator integration for all three formats, error handling, snapshot-style checks for common diagram outputs, the `Diagram.to_excalidraw()` method, and the history persistence, listing and loading behaviour. Ollama calls are fully mocked.
 
 ## 📍 Roadmap
 <!-- roadmap:start -->
 - [x] **v0.1.0** — first release: Natural Generation, Notebook UI, AI Refinement, Live Preview
 - [x] Add Excalidraw JSON export with sketchy hand-drawn look
 - [x] Implement diagram history with simple file-based versioning
-- [ ] Support PlantUML and Graphviz via additional LLM prompts
+- [x] Support PlantUML and Graphviz via additional LLM prompts
 - [ ] Add voice input using whisper for diagram descriptions
 - [ ] Create Obsidian plugin to insert generated diagrams
 - [ ] Improve few-shot prompting for higher first-try accuracy
