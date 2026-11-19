@@ -79,8 +79,8 @@ def generate_command(
 
         if output:
             mmd_path = output.with_suffix(".mmd")
-            mmd_path.write_text(diagram.mermaid, encoding="utf-8")
-            typer.secho(f"Saved Mermaid source → {mmd_path}", fg=typer.colors.CYAN)
+            mmd_path.write_text(diagram.source, encoding="utf-8")
+            typer.secho(f"Saved diagram source → {mmd_path}", fg=typer.colors.CYAN)
 
             md_path = output.with_suffix(".md")
             md_path.write_text(diagram.to_markdown(), encoding="utf-8")
@@ -140,8 +140,8 @@ def history_command(
 
         if output:
             mmd_path = output.with_suffix(".mmd")
-            mmd_path.write_text(diagram.mermaid, encoding="utf-8")
-            typer.secho(f"Saved Mermaid source → {mmd_path}", fg=typer.colors.CYAN)
+            mmd_path.write_text(diagram.source, encoding="utf-8")
+            typer.secho(f"Saved diagram source → {mmd_path}", fg=typer.colors.CYAN)
 
             md_path = output.with_suffix(".md")
             md_path.write_text(diagram.to_markdown(), encoding="utf-8")

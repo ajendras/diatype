@@ -89,10 +89,11 @@ async def api_refine(
             raise ValueError("instruction must be at least 3 characters")
 
         diagram = Diagram(
-            mermaid=payload.get("mermaid", ""),
+            source=payload.get("source") or payload.get("mermaid", ""),
             explanation=payload.get("explanation") or "The diagram has been refined according to your instructions.",
             svg=payload.get("svg", ""),
             diagram_type=payload.get("diagram_type", "flowchart"),
+            format=payload.get("format", "mermaid"),
         )
 
         refined = engine.refine(diagram, instruction)
@@ -111,9 +112,10 @@ async def api_explain(
     try:
         payload = await request.json()
         diagram = Diagram(
-            mermaid=payload.get("mermaid", ""),
-            explanation=payload.get("explanation") or "Explanation of the provided Mermaid diagram.",
+            source=payload.get("source") or payload.get("mermaid", ""),
+            explanation=payload.get("explanation") or "Explanation of the provided diagram.",
             diagram_type=payload.get("diagram_type", "flowchart"),
+            format=payload.get("format", "mermaid"),
             svg=payload.get("svg", ""),
         )
         explanation = engine.explain(diagram)
@@ -132,9 +134,10 @@ async def api_excalidraw(request: Request) -> dict[str, Any]:
     try:
         payload = await request.json()
         diagram = Diagram(
-            mermaid=payload.get("mermaid", ""),
+            source=payload.get("source") or payload.get("mermaid", ""),
             explanation=payload.get("explanation") or "Diagram exported for use in Excalidraw with hand-drawn styling.",
             diagram_type=payload.get("diagram_type", "flowchart"),
+            format=payload.get("format", "mermaid"),
             svg=payload.get("svg", ""),
         )
         return diagram.to_excalidraw()
