@@ -31,7 +31,7 @@ class DiagramRequest(BaseModel):
 
     diagram_type: str = Field(
         default="flowchart",
-        pattern=r"^(flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|mindmap|timeline|gitGraph|c4Diagram|sequence|class|activity|state|component|object|deployment)$",
+        pattern=r"^(flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|mindmap|timeline|gitGraph|c4Diagram|sequence|class|activity|state|component|object|deployment|graph)$",
         description="Diagram kind hint. Must be one of the supported values (Mermaid kinds or common PlantUML/Graphviz equivalents).",
         examples=["flowchart", "sequenceDiagram", "sequence"],
     )
@@ -140,6 +140,6 @@ class Diagram(BaseModel):
         }
 
     model_config = ConfigDict(
-        extra="forbid",
+        extra="ignore",
         validate_assignment=True,
     )

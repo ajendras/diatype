@@ -35,7 +35,7 @@ class Settings(BaseModel):
 
     default_diagram_type: str = Field(
         default="flowchart",
-        pattern=r"^(flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|mindmap|timeline|gitGraph|c4Diagram|sequence|class|activity|state|component|object|deployment)$",
+        pattern=r"^(flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|mindmap|timeline|gitGraph|c4Diagram|sequence|class|activity|state|component|object|deployment|graph)$",
         description="Default diagram kind hint (used for all formats).",
     )
 

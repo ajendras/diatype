@@ -255,8 +255,14 @@ class DiagramEngine:
 
         Centralizes all parsing, sanitization, validation and Pydantic construction.
         History fields are populated here so that each version is correctly tracked.
+        Improved to robustly handle JSON, markdown code blocks (the most common case),
+        and regex fallbacks.
         """
-        # Try strict JSON first (encouraged by the format="json" parameter)
+        content = content.strip()
+        raw_source = ""
+        explanation = ""
+
+        # Priority 1: strict JSON (encouraged by format="json")
         try:
             parsed = json.loads(content)
             if isinstance(parsed, dict):
@@ -264,23 +270,60 @@ class DiagramEngine:
                     "mermaid", parsed.get("plantuml", parsed.get("dot", ""))
                 )
                 explanation = parsed.get("explanation", "")
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        if not raw_source:
+            # Priority 2: markdown code block (very common even with JSON mode)
+            fence_pattern = (
+                r"```(?:"
+                + output_format
+                + r"|mermaid|plantuml|dot|graphviz)?\s*\n(.*?)\n```"
+            )
+            match = re.search(fence_pattern, content, re.DOTALL | re.IGNORECASE)
+            if match:
+                raw_source = match.group(1).strip()
+                # Extract explanation from surrounding text
+                expl_match = re.search(
+                    r"(?i)(?:explanation|description|note)[:\s]+(.+?)(?=\n\n|\n```|$)",
+                    content,
+                    re.DOTALL,
+                )
+                if expl_match:
+                    explanation = expl_match.group(1).strip()
             else:
-                raw_source = content
-                explanation = "No explanation provided by model."
-        except json.JSONDecodeError:
-            # Fallback: extract with regex (handles markdown-wrapped answers)
+                # also try generic fence
+                match = re.search(
+                    r"```(?:mermaid|plantuml|dot|graphviz)?\s*\n(.*?)\n```",
+                    content,
+                    re.DOTALL | re.IGNORECASE,
+                )
+                if match:
+                    raw_source = match.group(1).strip()
+
+        if not raw_source:
+            # Priority 3: regex fallback for inline JSON-like responses
             source_match = re.search(
-                r'"?(?:source|mermaid|plantuml|dot)"?\s*[:=]\s*["\'](.*?)["\'](?:,|\s*\})',
+                r'"?(?:source|mermaid|plantuml|dot)"?\s*[:=]\s*["\']?(.*?)["\']?(?:,|\s*[\}\n]|$)',
                 content,
-                re.DOTALL,
+                re.DOTALL | re.IGNORECASE,
             )
+            if source_match:
+                raw_source = source_match.group(1).strip()
+
             expl_match = re.search(
-                r'"?explanation"?\s*[:=]\s*["\'](.*?)["\'](?:,|\s*\})',
+                r'"?explanation"?\s*[:=]\s*["\']?(.*?)["\']?(?:,|\s*[\}\n]|$)',
                 content,
-                re.DOTALL,
+                re.DOTALL | re.IGNORECASE,
             )
-            raw_source = source_match.group(1) if source_match else content
-            explanation = expl_match.group(1) if expl_match else "Diagram generated from your description."
+            if expl_match:
+                explanation = expl_match.group(1).strip()
+
+        if not raw_source:
+            raw_source = content  # last resort
+
+        if not explanation:
+            explanation = "Diagram generated from your description."
 
         clean_source = sanitize(raw_source, output_format)
 
