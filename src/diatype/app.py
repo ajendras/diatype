@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -50,6 +50,7 @@ async def read_root(request: Request) -> HTMLResponse:
             "request": request,
             "ollama_model": settings.ollama_model,
             "default_diagram_type": settings.default_diagram_type,
+            "whisper_model": settings.whisper_model,
         },
     )
 
@@ -124,6 +125,29 @@ async def api_explain(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.post("/api/transcribe")
+async def api_transcribe(
+    file: UploadFile = File(...), engine: DiagramEngine = Depends(get_engine)
+) -> dict[str, str]:
+    """Transcribe uploaded audio to text using faster-whisper.
+
+    Accepts webm, mp3, wav etc. Returns the recognised text to be used as prompt.
+    """
+    if not file.content_type or not file.content_type.startswith("audio/"):
+        raise HTTPException(status_code=400, detail="Audio file required")
+
+    try:
+        audio_bytes = await file.read()
+        if len(audio_bytes) < 512:
+            raise ValueError("Audio file too small")
+        text = engine.transcribe(audio_bytes)
+        return {"text": text}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Transcription failed: {exc}"
+        ) from exc
+
+
 @app.post("/api/excalidraw")
 async def api_excalidraw(request: Request) -> dict[str, Any]:
     """Return Excalidraw v2 JSON with sketchy hand-drawn styling.
@@ -183,4 +207,4 @@ async def api_load_version(
 async def health() -> dict[str, str]:
     """Simple health check exposing the configured model."""
     settings = Settings.load()
-    return {"status": "healthy", "model": settings.ollama_model}
+    return {"status": "healthy", "model": settings.ollama_model, "whisper": settings.whisper_model}

@@ -74,6 +74,12 @@ class Settings(BaseModel):
         description="Directory for JSON version history files.",
     )
 
+    whisper_model: str = Field(
+        default="base",
+        description="Whisper model size for local voice transcription (tiny, base, small).",
+        examples=["tiny", "base", "small"],
+    )
+
     model_config = ConfigDict(
         extra="ignore",
         validate_assignment=True,
@@ -143,5 +149,6 @@ class Settings(BaseModel):
             f"temp={self.temperature}, "
             f"default_type={self.default_diagram_type}, "
             f"default_format={self.default_format}, "
+            f"whisper={self.whisper_model}, "
             f"history={self.history_enabled})"
         )

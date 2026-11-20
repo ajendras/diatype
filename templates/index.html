@@ -3,153 +3,160 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DiaType — Notebook</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&amp;family=Instrument+Serif:ital@0;1&amp;display=swap" rel="stylesheet">
+    <title>DiaType • Notebook</title>
     <link rel="stylesheet" href="/static/css/styles.css">
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"></script>
+    <script src="/static/js/main.js" defer></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&amp;display=swap');
-
-        :root {
-            --ink: #5d4037;
-            --paper: #f9f4e9;
-        }
-
         .notebook {
             background: #f9f4e9;
-            background-image:
+            background-image: 
                 linear-gradient(#e5d9c0 1px, transparent 0),
                 linear-gradient(90deg, #e5d9c0 1px, transparent 0);
-            background-size: 100% 28px, 28px 100%;
-            box-shadow: 8px 12px 0 #3f2a21,
-                        0 0 0 16px #5d4037;
-            border-radius: 8px 28px 12px 24px;
+            background-size: 40px 40px;
+            box-shadow: 0 0 0 12px #5d4037,
+                        0 0 0 14px #f9f4e9;
+            border: 2px solid #3f2a21;
+            padding: 2rem;
+            max-width: 1100px;
+            margin: 2rem auto;
+            position: relative;
         }
-
-        .wobbly-border {
+        .lined::after {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                transparent 0px,
+                transparent 28px,
+                #c9b89a 29px
+            );
+            pointer-events: none;
+            z-index: 0;
+            opacity: 0.15;
+        }
+        .voice-btn {
+            background: #fef08c;
             border: 3px solid #5d4037;
-            border-radius: 12px 28px 18px 8px;
-            box-shadow: 4px 6px 0 #5d4037;
+            font-family: 'Caveat', cursive;
+            font-size: 1.4rem;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            box-shadow: 3px 3px 0 #5d4037;
+            transition: all 0.1s;
         }
-
-        .sticky-note {
-            background: #fefce8;
-            box-shadow: 4px 5px 0 #5d4037;
-            transform: rotate(-3deg);
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        .voice-btn:active {
+            transform: translate(2px, 2px);
+            box-shadow: 1px 1px 0 #5d4037;
+        }
+        .voice-btn.recording {
+            background: #f87171;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        .status {
+            font-family: 'Caveat', cursive;
+            color: #5d4037;
+            font-size: 1.1rem;
         }
     </style>
 </head>
-<body class="bg-[#d2c3a8] flex items-center justify-center min-h-screen p-8">
-    <div class="notebook w-full max-w-6xl p-10">
-        <!-- Header -->
-        <div class="flex justify-between items-start mb-8">
-            <div>
-                <h1 class="text-6xl font-bold text-[#5d4037] rotate-[-2deg] inline-block bg-[#fef08c] px-8 py-1 shadow-[4px_6px_0_#3f2a21] rounded-[4px_28px_4px_18px]">
-                    DiaType
-                </h1>
-                <p class="mt-3 text-[#8d6b4f] text-xl font-serif pl-4">sketch • describe • refine</p>
+<body>
+    <div class="notebook lined">
+        <div style="text-align:center; margin-bottom: 2rem; position: relative; z-index: 1;">
+            <h1 style="font-size: 4rem; margin: 0; color: #5d4037; font-family: 'Caveat', cursive;">
+                DiaType
+            </h1>
+            <p style="margin: 0; font-style: italic; color: #666; font-size: 1.1rem;">
+                speak • sketch • refine • repeat
+            </p>
+            <div style="position: absolute; top: 10px; right: 20px; font-size: 0.9rem; color: #8d6e63;">
+                model: {{ ollama_model }} • whisper: {{ whisper_model }}
+            </div>
+        </div>
+
+        <div style="margin-bottom: 1.5rem; position: relative; z-index: 1;">
+            <label style="font-family: 'Caveat', cursive; font-size: 1.5rem; display: block; margin-bottom: 8px;">
+                What diagram would you like to draw?
+            </label>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <textarea id="prompt" 
+                          rows="3"
+                          style="flex: 1; font-family: 'Instrument Serif', serif; font-size: 1.1rem; padding: 12px; border: 3px solid #5d4037; background: #fff7ed; resize: vertical;"
+                          placeholder="A user login flow with OAuth and a PostgreSQL database..."></textarea>
+                <button onclick="toggleVoiceInput()" 
+                        id="voice-btn"
+                        class="voice-btn"
+                        title="Voice input (faster-whisper)">
+                    🎤
+                </button>
+            </div>
+            <div id="voice-status" class="status" style="margin-top: 6px; min-height: 1.4em;"></div>
+        </div>
+
+        <div style="display: flex; gap: 12px; margin-bottom: 2rem; position: relative; z-index: 1;">
+            <button onclick="generateDiagram()" 
+                    style="background:#5d4037; color:#f9f4e9; border:none; padding:12px 24px; font-family:'Caveat',cursive; font-size:1.4rem; cursor:pointer; box-shadow:4px 4px 0 #3f2a21;">
+                Generate Diagram
+            </button>
+            <button onclick="explainDiagram()" 
+                    style="background:#fef08c; color:#5d4037; border:3px solid #5d4037; padding:12px 24px; font-family:'Caveat',cursive; font-size:1.4rem; cursor:pointer;">
+                Explain
+            </button>
+            <button onclick="showHistory()" 
+                    style="background:#f9f4e9; color:#5d4037; border:3px solid #5d4037; padding:12px 24px; font-family:'Caveat',cursive; font-size:1.4rem; cursor:pointer;">
+                History
+            </button>
+        </div>
+
+        <div id="result" style="display:none; position: relative; z-index: 1;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h2 id="diagram-title" style="margin:0; font-size:2rem; font-family:'Caveat',cursive;">Diagram</h2>
+                <div>
+                    <button onclick="refineWithPrompt()" 
+                            style="margin-right:8px; background:#fef08c; border:3px solid #5d4037; padding:6px 16px; font-family:'Caveat',cursive;">
+                        Refine with instruction
+                    </button>
+                    <button onclick="copySource()" 
+                            style="background:#5d4037; color:white; border:none; padding:6px 16px; font-family:'Caveat',cursive;">
+                        Copy Source
+                    </button>
+                    <button onclick="exportExcalidraw()" 
+                            style="background:#5d4037; color:white; border:none; padding:6px 16px; font-family:'Caveat',cursive;">
+                        Excalidraw
+                    </button>
+                </div>
             </div>
             
-            <div class="flex gap-3">
-                <div onclick="window.location.reload()" 
-                     class="sticky-note w-28 h-20 flex items-center justify-center text-center cursor-pointer text-sm leading-tight">
-                    New<br>Notebook
-                </div>
-                <div class="sticky-note w-28 h-20 flex items-center justify-center text-center cursor-pointer text-sm leading-tight bg-[#e0f2fe]"
-                     data-prompt="User authentication flow with login, verification and database"
-                     data-type="flowchart">
-                    Login Flow
-                </div>
-                <div class="sticky-note w-28 h-20 flex items-center justify-center text-center cursor-pointer text-sm leading-tight"
-                     data-prompt="Microservice architecture with API gateway, auth service, payment and database"
-                     data-type="flowchart">
-                    Microservices
-                </div>
+            <pre id="source" style="background:#fff7ed; padding:1rem; border:3px solid #5d4037; font-size:0.95rem; overflow:auto; max-height:240px; font-family:monospace; white-space:pre;"></pre>
+            
+            <div id="mermaid-preview" style="background:white; border:3px solid #5d4037; padding:1rem; margin-top:1rem; min-height:300px;">
+                <!-- Mermaid rendered here by JS -->
             </div>
+            
+            <div id="explanation" style="margin-top:1.5rem; background:#fefce8; padding:1rem; border:2px dashed #5d4037; font-style:italic;"></div>
         </div>
 
-        <div class="grid grid-cols-12 gap-8">
-            <!-- Prompt column -->
-            <div class="col-span-5">
-                <div class="mb-3 flex items-center gap-2">
-                    <span class="highlighter px-4 py-1 text-xl">What shall we draw?</span>
-                </div>
-                
-                <textarea id="prompt-input" 
-                          class="prompt-area w-full"
-                          placeholder="A user logs in, the service checks credentials, then loads the dashboard..."></textarea>
-                
-                <div class="flex gap-3 mt-4">
-                    <button id="generate-btn"
-                            class="btn flex-1">✏️ Generate Diagram</button>
-                    <button onclick="explainDiagram()" id="explain-btn"
-                            class="btn btn-secondary">💬 Explain</button>
-                </div>
-
-                <div id="status" class="status mt-6">Ready</div>
-
-                <!-- Gallery -->
-                <div class="mt-10">
-                    <div class="highlighter text-lg mb-4 inline-block">Template gallery</div>
-                    <div class="gallery">
-                        <div class="sticky-note text-base" data-prompt="Sequence of CI pipeline steps: build, test, deploy" data-type="sequenceDiagram">
-                            CI Pipeline
-                        </div>
-                        <div class="sticky-note text-base" data-prompt="Class diagram for User, Order and Payment models" data-type="classDiagram">
-                            Class Model
-                        </div>
-                        <div class="sticky-note text-base" data-prompt="ER diagram for blog with posts, comments, users" data-type="erDiagram">
-                            Blog DB
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Preview column -->
-            <div class="col-span-7">
-                <div class="mermaid-container wobbly-border relative" id="mermaid-preview">
-                    <!-- populated by JS -->
-                </div>
-
-                <div id="export-toolbar" class="toolbar mt-6 hidden">
-                    <button id="export-svg" class="btn">📤 SVG</button>
-                    <button id="export-png" class="btn">🖼️ PNG</button>
-                    <button id="export-excalidraw" class="btn">📝 Excalidraw</button>
-                    <button id="copy-md" class="btn">📋 Copy MD</button>
-                </div>
-
-                <div class="mt-8">
-                    <label class="block text-[#8d6b4f] text-sm mb-2 font-medium">Mermaid source (editable)</label>
-                    <textarea id="mermaid-code" 
-                              class="code-editor w-full font-mono text-sm h-52"></textarea>
-                </div>
-
-                <!-- Refinement -->
-                <div class="mt-8 pt-6 border-t border-[#d4b99e]">
-                    <form id="refine-form" class="flex gap-3">
-                        <input id="refine-instruction" 
-                               type="text"
-                               class="flex-1 prompt-area h-12 text-base"
-                               placeholder="make the arrows thicker, add a retry loop...">
-                        <button type="submit"
-                                class="btn px-8">Refine</button>
-                    </form>
-                </div>
-
-                <div id="explanation" class="mt-8 p-6 bg-[#fefce8] border-2 border-[#5d4037] rounded-3xl text-[#5d4037] leading-relaxed min-h-[110px]">
-                    <span class="highlighter">Explanation</span><br>
-                    Your diagram will be explained here.
-                </div>
-            </div>
+        <div id="history-panel" style="display:none; margin-top:2rem; position: relative; z-index: 1;">
+            <h3 style="font-family:'Caveat',cursive; font-size:2rem; margin-bottom:1rem;">Recent Diagrams</h3>
+            <div id="history-list" style="max-height:400px; overflow:auto;"></div>
         </div>
 
-        <div class="text-center text-[#8d6b4f] text-xs mt-12 font-serif">
-            Local • Private • Hand-drawn • Powered by Ollama + Mermaid + Excalidraw
+        <div style="margin-top:3rem; text-align:center; font-size:0.8rem; color:#8d6e63; position: relative; z-index: 1;">
+            All processing is local • Powered by Ollama + faster-whisper
         </div>
     </div>
 
-    <script src="/static/js/main.js"></script>
+    <script>
+        // Global state
+        let currentDiagram = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+    </script>
 </body>
 </html>

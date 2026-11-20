@@ -8,7 +8,7 @@ injection of settings) and resilient to imperfect LLM responses.
 The engine also maintains simple file-based versioning: every generated
 or refined diagram is saved as a timestamped JSON file in the configured
 history directory. Refinements increment the version number for the same
-diagram ID.
+diagram ID. Voice transcription is provided via faster-whisper.
 """
 
 from __future__ import annotations
@@ -33,10 +33,12 @@ class DiagramEngine:
     All heavy lifting (prompt engineering per format, retry logic, sanitization) lives here
     so the FastAPI layer and CLI stay thin and focused on transport.
     History persistence is also handled here using simple JSON files.
+    Voice transcription uses faster-whisper (loaded once on first use).
     """
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings.load()
+        self._whisper_model = None
 
     def _build_system_prompt(self, output_format: str = "mermaid") -> str:
         """High-precision system prompt tailored to the requested output format."""
@@ -241,6 +243,38 @@ class DiagramEngine:
                 f"{diagram.explanation}\n\n"
                 f"Diagram source:\n{diagram.to_markdown()}"
             )
+
+    def transcribe(self, audio_bytes: bytes) -> str:
+        """Transcribe spoken audio to text using a local faster-whisper model.
+
+        The model is loaded once on first use. Returns cleaned transcription text.
+        """
+        if not audio_bytes:
+            return "No audio provided."
+
+        import tempfile
+
+        from faster_whisper import WhisperModel
+
+        if self._whisper_model is None:
+            self._whisper_model = WhisperModel(
+                self.settings.whisper_model,
+                device="cpu",
+                compute_type="int8",
+            )
+
+        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp_file:
+            tmp_file.write(audio_bytes)
+            tmp_path = tmp_file.name
+
+        try:
+            segments, _ = self._whisper_model.transcribe(
+                tmp_path, beam_size=5, word_timestamps=False, vad_filter=True
+            )
+            text = " ".join(s.text.strip() for s in segments if s.text.strip())
+            return text.strip() or "No speech could be recognized."
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
     def _parse_llm_response(
         self,

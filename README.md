@@ -36,20 +36,25 @@ Creating and updating technical diagrams is tedious and error-prone. Existing to
 
 <table>
 <tr>
-<td align="center" valign="top" width="33%">
+<td align="center" valign="top" width="25%">
 🤖<br>
 <b>Natural Generation</b><br>
 Describe any diagram in plain English; receive valid Mermaid, PlantUML or Graphviz via Ollama (specialized prompts per format)
 </td>
-<td align="center" valign="top" width="33%">
+<td align="center" valign="top" width="25%">
 📓<br>
 <b>Notebook UI</b><br>
 Handwriting-font headings, lined paper, wobbly borders and sticky notes
 </td>
-<td align="center" valign="top" width="33%">
+<td align="center" valign="top" width="25%">
 🔄<br>
 <b>AI Refinement</b><br>
 Iterate with natural-language instructions; original structure is preserved
+</td>
+<td align="center" valign="top" width="25%">
+🎤<br>
+<b>Voice Input</b><br>
+Speak your diagram description; transcribed locally with faster-whisper (CPU, no cloud)
 </td>
 </tr>
 <tr>
@@ -90,7 +95,7 @@ Automatic file-based versioning; browse, reload any previous state from disk
 
 ## 📦 Installation
 
-**Requirements**: Python 3.10+, a running Ollama instance with a model such as `llama3.2`.
+**Requirements**: Python 3.10+, a running Ollama instance with a model such as `llama3.2`. For voice input, faster-whisper will download a model (base by default) on first use; ffmpeg is recommended for best audio support.
 
 ```bash
 pip install diatype
@@ -156,6 +161,10 @@ diatype generate "user login sequence" --type sequence --format plantuml --outpu
 diatype generate "dependency graph of services" --type graph --format graphviz --output diagrams/deps
 ```
 
+**Voice input in the notebook UI**
+
+Click the microphone button (🎤) next to the prompt field, speak your diagram description, and the transcribed text will automatically populate the prompt. The transcription runs completely locally with faster-whisper.
+
 **Refining an existing diagram** (Python):
 
 ```python
@@ -217,9 +226,13 @@ diatype serve --host 0.0.0.0 --port 8080 --reload
 curl -X POST http://127.0.0.1:8000/api/generate \
   -H "Content-Type: application/json" \
   -d '{"prompt": "sequence of a CI pipeline", "diagram_type": "sequenceDiagram", "format": "mermaid"}'
+
+# Voice transcription
+curl -X POST http://127.0.0.1:8000/api/transcribe \
+  -F "file=@recording.webm"
 ```
 
-The `/api/refine`, `/api/explain`, `/api/excalidraw`, `/api/history` and `/api/load_version` endpoints are available. All routes are defined in `src/diatype/app.py`.
+The `/api/refine`, `/api/explain`, `/api/excalidraw`, `/api/history`, `/api/load_version` and new `/api/transcribe` endpoints are available. All routes are defined in `src/diatype/app.py`.
 </details>
 
 ## 🔧 Configuration
@@ -237,6 +250,7 @@ DiaType loads settings from `config.toml` (or falls back to defaults). The `Sett
 | `history_enabled`     | `true`                   | Whether to automatically save diagrams to versioned history. |
 | `max_history`         | `30`                     | Maximum history files to retain (oldest pruned first). |
 | `history_dir`         | `diagrams/history`       | Where versioned JSON files are stored. |
+| `whisper_model`       | `base`                   | Whisper model size for voice input (tiny/base/small). Downloaded on first use. |
 
 See `config.example.toml` for a ready-to-copy sample.
 
@@ -245,9 +259,11 @@ See `config.example.toml` for a ready-to-copy sample.
 ```mermaid
 flowchart TD
     User[User / CLI] -->|prompt| CLI["cli.py (diatype generate/serve/history)"]
+    User -->|voice| Whisper["faster-whisper (local STT)"]
+    Whisper -->|text| Prompt[Prompt field]
     User -->|browser| UI["templates/index.html + HTMX"]
     CLI --> Engine["DiagramEngine (generator.py)"]
-    UI --> FastAPI["FastAPI (/api/generate, /api/refine, /api/explain)"]
+    UI --> FastAPI["FastAPI (/api/generate, /api/refine, /api/explain, /api/transcribe)"]
     FastAPI --> Engine
     Engine -->|format-aware system prompt| Ollama["Ollama (local LLM)"]
     Ollama -->|JSON response| Validator["validator.py (sanitize, validate_source per format)"]
@@ -259,7 +275,7 @@ flowchart TD
     Config["config.py (Settings)"] --> Engine
 ```
 
-`DiagramEngine` orchestrates prompt construction, LLM calls, parsing, validation and refinement. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2). History uses simple timestamped JSON files with automatic pruning. PlantUML and Graphviz are supported via dedicated system prompts that instruct the LLM to emit the appropriate syntax inside the shared JSON schema (`source` + `explanation`).
+`DiagramEngine` orchestrates prompt construction, LLM calls, parsing, validation and refinement. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2). History uses simple timestamped JSON files with automatic pruning. PlantUML and Graphviz are supported via dedicated system prompts that instruct the LLM to emit the appropriate syntax inside the shared JSON schema (`source` + `explanation`). Voice input is handled by a dedicated `/api/transcribe` endpoint and `DiagramEngine.transcribe()` using faster-whisper.
 
 ## 📁 Project structure
 
@@ -271,15 +287,15 @@ flowchart TD
 │   ├── __init__.py                # public API: Diagram, DiagramEngine, DiagramRequest
 │   ├── config.py                  # Settings Pydantic model with TOML loader
 │   ├── models.py                  # Diagram & DiagramRequest with validators + to_excalidraw
-│   ├── generator.py               # DiagramEngine (generate, refine, explain, history)
+│   ├── generator.py               # DiagramEngine (generate, refine, explain, history, transcribe)
 │   ├── validator.py               # validate_source (mermaid/plantuml/graphviz), sanitize, detect_diagram_type
 │   ├── app.py                     # FastAPI routes + Jinja2 notebook UI
 │   └── cli.py                     # Typer commands: generate, serve, history, version
 ├── templates/index.html           # hand-drawn notebook UI (Caveat font, lined paper)
 ├── static/
 │   ├── css/styles.css             # wobbly borders, highlighter accents, sticky notes
-│   └── js/main.js                 # HTMX interactions, mermaid rendering, exports
-├── tests/test_generator.py        # pytest + mocked Ollama, snapshot tests
+│   └── js/main.js                 # HTMX interactions, mermaid rendering, exports, voice recording
+├── tests/test_generator.py        # pytest + mocked Ollama/Whisper, snapshot tests
 ├── examples/demo.py               # runnable Python example (architecture diagram)
 └── LICENSE
 ```
@@ -290,7 +306,7 @@ flowchart TD
 pytest
 ```
 
-The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate` (including new PlantUML/Graphviz paths), `refine`, `explain`, prompt validation, fallback JSON/markdown parsing, validator integration for all three formats, error handling, snapshot-style checks for common diagram outputs, the `Diagram.to_excalidraw()` method, and the history persistence, listing and loading behaviour. Ollama calls are fully mocked.
+The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate` (including new PlantUML/Graphviz paths), `refine`, `explain`, the new `transcribe` method (with mocked faster-whisper), prompt validation, fallback JSON/markdown parsing, validator integration for all three formats, error handling, snapshot-style checks for common diagram outputs, the `Diagram.to_excalidraw()` method, and the history persistence, listing and loading behaviour. Ollama and Whisper calls are fully mocked.
 
 ## 📍 Roadmap
 <!-- roadmap:start -->
@@ -298,7 +314,7 @@ The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate` (incl
 - [x] Add Excalidraw JSON export with sketchy hand-drawn look
 - [x] Implement diagram history with simple file-based versioning
 - [x] Support PlantUML and Graphviz via additional LLM prompts
-- [ ] Add voice input using whisper for diagram descriptions
+- [x] Add voice input using whisper for diagram descriptions
 - [ ] Create Obsidian plugin to insert generated diagrams
 - [ ] Improve few-shot prompting for higher first-try accuracy
 - [ ] Add bulk generation from a folder of markdown requirement files
