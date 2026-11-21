@@ -1,0 +1,10 @@
+{
+  "id": "diatype",
+  "name": "DiaType",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Generate Mermaid diagrams from natural language using your local DiaType service and insert them into notes.",
+  "author": "DiaType Contributors",
+  "authorUrl": "https://github.com/ajendras/diatype",
+  "isDesktopOnly": true
+}

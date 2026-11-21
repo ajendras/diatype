@@ -27,6 +27,7 @@ Creating and updating technical diagrams is tedious and error-prone. Existing to
 - **Iterative refinement** — tell the model to "add error handling" or "make the layout left-to-right" without rewriting prompts
 - **Hand-drawn notebook UI** — lined paper, Caveat handwriting font, wobbly borders and highlighter accents create a familiar sketchbook feel
 - **Zero cloud, fully editable** — live Mermaid preview, one-click SVG/PNG/PDF export, and CLI companion for scripts and CI
+- **Obsidian integration** — generate diagrams from natural language directly inside your Obsidian vault and insert them as editable Mermaid blocks
 
 ## 🎬 Demo
 
@@ -89,6 +90,13 @@ Generate diagrams directly from terminal with <code>diatype generate</code>
 📜<br>
 <b>Versioned History</b><br>
 Automatic file-based versioning; browse, reload any previous state from disk
+</td>
+</tr>
+<tr>
+<td align="center" valign="top" colspan="3">
+🔌<br>
+<b>Obsidian Plugin</b><br>
+Generate diagrams from natural language inside Obsidian and insert live Mermaid blocks + explanations (local API, no extra dependencies)
 </td>
 </tr>
 </table>
@@ -220,6 +228,19 @@ print(explanation)
 diatype serve --host 0.0.0.0 --port 8080 --reload
 ```
 
+**Obsidian Plugin**
+
+A companion plugin lives in `obsidian-plugin/`. It lets you generate diagrams from natural language inside any Obsidian note and inserts a ready-to-render Mermaid block plus explanation.
+
+**Installation**
+1. Ensure the DiaType server is running (`diatype serve`).
+2. Copy the entire `obsidian-plugin` folder into your vault as `.obsidian/plugins/diatype/`.
+3. Inside that folder run `npm install && npm run build` (requires Node.js).
+4. In Obsidian open Settings → Community plugins → enable **DiaType**.
+5. Use the ribbon icon (📊) or command palette entry "DiaType: Insert generated diagram".
+
+The plugin opens a modal where you describe the diagram; it calls the local `/api/generate` endpoint and inserts the result at the cursor. Settings let you configure the API base URL.
+
 <details><summary>Advanced: using the FastAPI endpoints directly</summary>
 
 ```bash
@@ -254,6 +275,8 @@ DiaType loads settings from `config.toml` (or falls back to defaults). The `Sett
 
 See `config.example.toml` for a ready-to-copy sample.
 
+The Obsidian plugin reads its own settings (API base URL, default diagram type) from Obsidian's plugin data store.
+
 ## 🧩 Architecture
 
 ```mermaid
@@ -262,6 +285,8 @@ flowchart TD
     User -->|voice| Whisper["faster-whisper (local STT)"]
     Whisper -->|text| Prompt[Prompt field]
     User -->|browser| UI["templates/index.html + HTMX"]
+    User -->|obsidian| Obsidian["Obsidian Plugin (main.ts)"]
+    Obsidian -->|fetch| FastAPI["FastAPI (/api/generate)"]
     CLI --> Engine["DiagramEngine (generator.py)"]
     UI --> FastAPI["FastAPI (/api/generate, /api/refine, /api/explain, /api/transcribe)"]
     FastAPI --> Engine
@@ -275,7 +300,7 @@ flowchart TD
     Config["config.py (Settings)"] --> Engine
 ```
 
-`DiagramEngine` orchestrates prompt construction, LLM calls, parsing, validation and refinement. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2). History uses simple timestamped JSON files with automatic pruning. PlantUML and Graphviz are supported via dedicated system prompts that instruct the LLM to emit the appropriate syntax inside the shared JSON schema (`source` + `explanation`). Voice input is handled by a dedicated `/api/transcribe` endpoint and `DiagramEngine.transcribe()` using faster-whisper.
+`DiagramEngine` orchestrates prompt construction, LLM calls, parsing, validation and refinement. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2). History uses simple timestamped JSON files with automatic pruning. PlantUML and Graphviz are supported via dedicated system prompts that instruct the LLM to emit the appropriate syntax inside the shared JSON schema (`source` + `explanation`). Voice input is handled by a dedicated `/api/transcribe` endpoint and `DiagramEngine.transcribe()` using faster-whisper. The Obsidian plugin adds a modal-driven interface that calls the same local API and inserts Markdown directly into notes.
 
 ## 📁 Project structure
 
@@ -289,8 +314,15 @@ flowchart TD
 │   ├── models.py                  # Diagram & DiagramRequest with validators + to_excalidraw
 │   ├── generator.py               # DiagramEngine (generate, refine, explain, history, transcribe)
 │   ├── validator.py               # validate_source (mermaid/plantuml/graphviz), sanitize, detect_diagram_type
-│   ├── app.py                     # FastAPI routes + Jinja2 notebook UI
+│   ├── app.py                     # FastAPI routes + Jinja2 notebook UI (now with CORS for Obsidian)
 │   └── cli.py                     # Typer commands: generate, serve, history, version
+├── obsidian-plugin/
+│   ├── manifest.json              # Obsidian plugin metadata
+│   ├── main.ts                    # TypeScript plugin with modal, API client and editor insertion
+│   ├── styles.css                 # Hand-drawn styling for the generation modal
+│   ├── package.json               # Build dependencies (esbuild, TypeScript, Obsidian types)
+│   ├── tsconfig.json              # TypeScript configuration
+│   └── esbuild.config.mjs         # Bundler config that produces main.js
 ├── templates/index.html           # hand-drawn notebook UI (Caveat font, lined paper)
 ├── static/
 │   ├── css/styles.css             # wobbly borders, highlighter accents, sticky notes
@@ -315,7 +347,7 @@ The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate` (incl
 - [x] Implement diagram history with simple file-based versioning
 - [x] Support PlantUML and Graphviz via additional LLM prompts
 - [x] Add voice input using whisper for diagram descriptions
-- [ ] Create Obsidian plugin to insert generated diagrams
+- [x] Create Obsidian plugin to insert generated diagrams
 - [ ] Improve few-shot prompting for higher first-try accuracy
 - [ ] Add bulk generation from a folder of markdown requirement files
 - [ ] Support custom user-defined diagram templates

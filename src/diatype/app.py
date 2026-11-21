@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -23,6 +24,15 @@ app = FastAPI(
     title="DiaType",
     version="0.3.0",
     description="Hand-drawn notebook for turning natural language into Mermaid diagrams — 100% local.",
+)
+
+# CORS support for the Obsidian plugin (local-only usage)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Mount static files (CSS, JS, fonts)
