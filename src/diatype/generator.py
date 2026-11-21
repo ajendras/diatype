@@ -41,7 +41,11 @@ class DiagramEngine:
         self._whisper_model = None
 
     def _build_system_prompt(self, output_format: str = "mermaid") -> str:
-        """High-precision system prompt tailored to the requested output format."""
+        """High-precision system prompt tailored to the requested output format.
+
+        Now includes rich few-shot examples (3 per format) to dramatically
+        improve first-try syntactic and stylistic accuracy.
+        """
         if output_format == "mermaid":
             return (
                 "You are an expert Mermaid.js diagramming assistant. "
@@ -55,9 +59,20 @@ class DiagramEngine:
                 "3. Never add extra commentary outside the JSON object.\n"
                 "4. Keep the diagram layout logical (TD/LR as appropriate).\n"
                 "5. For refinements, preserve as much of the original structure as possible.\n\n"
-                "Example response:\n"
-                '{"source": "flowchart TD\\n    A[User] --> B[Login]\\n    B --> C[Database]", '
-                '"explanation": "This flowchart shows a simple user login flow with a database."}'
+                "Few-shot examples:\n"
+                '1. Flowchart example:\n'
+                'User: "user logs in via OAuth then views their orders"\n'
+                'Assistant: {"source": "flowchart TD\\n    User[User] --> OAuth[OAuth Service]\\n    OAuth --> API[API Gateway]\\n    API --> Orders[Orders Service]", '
+                '"explanation": "OAuth-based login flow leading to an orders dashboard."}\n\n'
+                '2. Sequence diagram example:\n'
+                'User: "client requests resource from server that checks cache then database"\n'
+                'Assistant: {"source": "sequenceDiagram\\n    participant Client\\n    participant Server\\n    participant Cache\\n    participant DB\\n    Client->>Server: GET /resource\\n    Server->>Cache: check\\n    Cache-->>Server: miss\\n    Server->>DB: query\\n    DB-->>Server: data\\n    Server-->>Client: response", '
+                '"explanation": "Cache-assisted data retrieval sequence with fallback to database."}\n\n'
+                '3. Class diagram example:\n'
+                'User: "employee inherits from person and has many projects"\n'
+                'Assistant: {"source": "classDiagram\\n    class Person {\\n        +String name\\n        +int id\\n    }\\n    class Employee {\\n        +String department\\n    }\\n    class Project {\\n        +String title\\n    }\\n    Person <|-- Employee\\n    Employee \\"1\\" --> \\"*\\" Project", '
+                '"explanation": "Inheritance and association between Person, Employee and Project classes."}\n\n'
+                "Always follow the style shown in the examples. Produce the diagram now for the user's request."
             )
         if output_format == "plantuml":
             return (
@@ -72,9 +87,20 @@ class DiagramEngine:
                 "3. Use clear participants, arrows (->), notes where appropriate.\n"
                 "4. Never add extra commentary outside the JSON object.\n"
                 "5. For refinements, preserve as much of the original structure as possible.\n\n"
-                "Example response:\n"
-                '{"source": "@startuml\\nparticipant User\\nUser -> Auth: login()\\nAuth --> User: token\\n@enduml", '
-                '"explanation": "This sequence diagram shows a user authentication flow."}'
+                "Few-shot examples:\n"
+                '1. Sequence example:\n'
+                'User: "user logs in via OAuth then views their orders"\n'
+                'Assistant: {"source": "@startuml\\nactor User\\nUser -> OAuth : login()\\nOAuth -> API : validate\\nAPI -> Orders : getOrders()\\nOrders --> API : orders\\nAPI --> User : success\\n@enduml", '
+                '"explanation": "OAuth login flow leading to order retrieval."}\n\n'
+                '2. Activity example:\n'
+                'User: "client requests resource that checks cache then queries database"\n'
+                'Assistant: {"source": "@startuml\\nstart\\n:Client Request;\\nif (Cache hit?) then (yes)\\n  :Return cached data;\\nelse (no)\\n  :Query Database;\\n  :Store in Cache;\\nendif\\n:Return Response;\\nstop\\n@enduml", '
+                '"explanation": "Cache-assisted retrieval with fallback query."}\n\n'
+                '3. Class example:\n'
+                'User: "employee inherits from person and has many projects"\n'
+                'Assistant: {"source": "@startuml\\nclass Person {\\n  +String name\\n  +int id\\n}\\nclass Employee {\\n  +String department\\n}\\nclass Project {\\n  +String title\\n}\\nPerson <|-- Employee\\nEmployee \\"1\\" --> \\"*\\" Project\\n@enduml", '
+                '"explanation": "Inheritance and association between Person, Employee and Project."}\n\n'
+                "Always follow the style shown in the examples. Produce the diagram now for the user's request."
             )
         if output_format == "graphviz":
             return (
@@ -88,9 +114,20 @@ class DiagramEngine:
                 "3. Use clear node and edge labels.\n"
                 "4. Never add extra commentary outside the JSON object.\n"
                 "5. For refinements, preserve as much of the original structure as possible.\n\n"
-                "Example response:\n"
-                '{"source": "digraph G {\\n  rankdir=LR;\\n  User -> Auth [label=\\"login\\"];\\n  Auth -> Service;\\n}", '
-                '"explanation": "This directed graph shows authentication and service routing."}'
+                "Few-shot examples:\n"
+                '1. Directed graph example:\n'
+                'User: "user logs in via OAuth then views their orders"\n'
+                'Assistant: {"source": "digraph G {\\n  rankdir=LR;\\n  User [shape=box];\\n  OAuth [shape=box];\\n  API [shape=box];\\n  Orders [shape=box];\\n  User -> OAuth [label=\\"login\\"];\\n  OAuth -> API [label=\\"validate\\"];\\n  API -> Orders [label=\\"fetch\\"];\\n  Orders -> API [label=\\"data\\"];\\n}", '
+                '"explanation": "OAuth authentication and order retrieval flow."}\n\n'
+                '2. Service dependency graph:\n'
+                'User: "microservices with api gateway, auth and payment"\n'
+                'Assistant: {"source": "digraph G {\\n  rankdir=TB;\\n  Client -> Gateway [label=\\"requests\\"];\\n  Gateway -> Auth [label=\\"auth\\"];\\n  Gateway -> Payment [label=\\"payment\\"];\\n  subgraph cluster_services {\\n    label=\\"Services\\";\\n    Auth; Payment;\\n  }\\n}", '
+                '"explanation": "Microservice architecture with API gateway routing to auth and payment services."}\n\n'
+                '3. Simple hierarchy:\n'
+                'User: "employee reports to manager who reports to director"\n'
+                'Assistant: {"source": "digraph G {\\n  rankdir=BT;\\n  Employee -> Manager [label=\\"reports to\\"];\\n  Manager -> Director [label=\\"reports to\\"];\\n  node [shape=box];\\n}", '
+                '"explanation": "Simple reporting hierarchy among employee, manager and director."}\n\n'
+                "Always follow the style shown in the examples. Produce the diagram now for the user's request."
             )
         # fallback
         return self._build_system_prompt("mermaid")

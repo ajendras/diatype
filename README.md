@@ -40,7 +40,7 @@ Creating and updating technical diagrams is tedious and error-prone. Existing to
 <td align="center" valign="top" width="25%">
 🤖<br>
 <b>Natural Generation</b><br>
-Describe any diagram in plain English; receive valid Mermaid, PlantUML or Graphviz via Ollama (specialized prompts per format)
+Describe any diagram in plain English; receive valid Mermaid, PlantUML or Graphviz via Ollama (specialized prompts per format with rich few-shot examples for higher first-try accuracy)
 </td>
 <td align="center" valign="top" width="25%">
 📓<br>
@@ -253,7 +253,7 @@ curl -X POST http://127.0.0.1:8000/api/transcribe \
   -F "file=@recording.webm"
 ```
 
-The `/api/refine`, `/api/explain`, `/api/excalidraw`, `/api/history`, `/api/load_version` and new `/api/transcribe` endpoints are available. All routes are defined in `src/diatype/app.py`.
+The `/api/refine`, `/api/explain`, `/api/transcribe`, `/api/excalidraw`, `/api/history`, `/api/load_version` endpoints are available. All routes are defined in `src/diatype/app.py`.
 </details>
 
 ## 🔧 Configuration
@@ -290,7 +290,7 @@ flowchart TD
     CLI --> Engine["DiagramEngine (generator.py)"]
     UI --> FastAPI["FastAPI (/api/generate, /api/refine, /api/explain, /api/transcribe)"]
     FastAPI --> Engine
-    Engine -->|format-aware system prompt| Ollama["Ollama (local LLM)"]
+    Engine -->|format-aware system prompt with few-shot examples| Ollama["Ollama (local LLM)"]
     Ollama -->|JSON response| Validator["validator.py (sanitize, validate_source per format)"]
     Validator --> Diagram["Diagram model (models.py)"]
     Diagram -->|save/load| History["diagrams/history/ (JSON versions)"]
@@ -300,7 +300,7 @@ flowchart TD
     Config["config.py (Settings)"] --> Engine
 ```
 
-`DiagramEngine` orchestrates prompt construction, LLM calls, parsing, validation and refinement. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2). History uses simple timestamped JSON files with automatic pruning. PlantUML and Graphviz are supported via dedicated system prompts that instruct the LLM to emit the appropriate syntax inside the shared JSON schema (`source` + `explanation`). Voice input is handled by a dedicated `/api/transcribe` endpoint and `DiagramEngine.transcribe()` using faster-whisper. The Obsidian plugin adds a modal-driven interface that calls the same local API and inserts Markdown directly into notes.
+`DiagramEngine` orchestrates prompt construction (now using rich few-shot examples per output format for higher first-try accuracy), LLM calls, parsing, validation and refinement. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2). History uses simple timestamped JSON files with automatic pruning. PlantUML and Graphviz are supported via dedicated system prompts that instruct the LLM to emit the appropriate syntax inside the shared JSON schema (`source` + `explanation`). Voice input is handled by a dedicated `/api/transcribe` endpoint and `DiagramEngine.transcribe()` using faster-whisper. The Obsidian plugin adds a modal-driven interface that calls the same local API and inserts Markdown directly into notes.
 
 ## 📁 Project structure
 
@@ -338,7 +338,7 @@ flowchart TD
 pytest
 ```
 
-The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate` (including new PlantUML/Graphviz paths), `refine`, `explain`, the new `transcribe` method (with mocked faster-whisper), prompt validation, fallback JSON/markdown parsing, validator integration for all three formats, error handling, snapshot-style checks for common diagram outputs, the `Diagram.to_excalidraw()` method, and the history persistence, listing and loading behaviour. Ollama and Whisper calls are fully mocked.
+The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate` (including new PlantUML/Graphviz paths and the improved few-shot system prompts), `refine`, `explain`, the new `transcribe` method (with mocked faster-whisper), prompt validation, fallback JSON/markdown parsing, validator integration for all three formats, error handling, snapshot-style checks for common diagram outputs, the `Diagram.to_excalidraw()` method, and the history persistence, listing and loading behaviour. Ollama and Whisper calls are fully mocked.
 
 ## 📍 Roadmap
 <!-- roadmap:start -->
@@ -348,7 +348,7 @@ The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate` (incl
 - [x] Support PlantUML and Graphviz via additional LLM prompts
 - [x] Add voice input using whisper for diagram descriptions
 - [x] Create Obsidian plugin to insert generated diagrams
-- [ ] Improve few-shot prompting for higher first-try accuracy
+- [x] Improve few-shot prompting for higher first-try accuracy
 - [ ] Add bulk generation from a folder of markdown requirement files
 - [ ] Support custom user-defined diagram templates
 - [ ] Export directly to draw.io XML format
