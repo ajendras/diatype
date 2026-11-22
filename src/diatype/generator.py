@@ -179,7 +179,7 @@ class DiagramEngine:
 
         except ollama.ResponseError as exc:
             raise RuntimeError(f"Ollama request failed: {exc}") from exc
-        except (json.JSONDecodeError, KeyError, ValidationError) as exc:
+        except (json.JSONDecodeError, KeyError, ValidationError, ValueError) as exc:
             raise RuntimeError(
                 "Could not parse a valid diagram from the model. "
                 "The model may be overloaded or the prompt too ambiguous."
@@ -438,6 +438,7 @@ class DiagramEngine:
 
             data = diagram.model_dump(mode="json")
             data["saved_at"] = datetime.now().isoformat()
+            data["filename"] = filename
 
             filepath.write_text(
                 json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
