@@ -2,7 +2,8 @@
 
 Provides `diatype generate` for terminal use and `diatype serve` to launch
 the notebook web interface. The new `history` command lists or loads
-versioned diagrams from the file-based history.
+versioned diagrams from the file-based history. The `bulk` command
+processes a folder of markdown requirement files.
 """
 
 from __future__ import annotations
@@ -90,6 +91,80 @@ def generate_command(
             "\n[italic]Tip: Open the hand-drawn notebook with [bold]diatype serve[/bold][/italic]"
         )
 
+    except Exception as exc:
+        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("bulk")
+def bulk_command(
+    input_dir: Annotated[
+        Path,
+        typer.Argument(
+            ...,
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            readable=True,
+            help="Folder containing one markdown requirement file per diagram.",
+        ),
+    ],
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Directory to write generated diagrams and markdown files.",
+            writable=True,
+        ),
+    ] = None,
+    diagram_type: Annotated[
+        str,
+        typer.Option("--type", "-t", help="Diagram type hint for all files."),
+    ] = "flowchart",
+    output_format: Annotated[
+        str,
+        typer.Option("--format", "-f", help="Output format (mermaid/plantuml/graphviz)."),
+    ] = "mermaid",
+    explain: Annotated[
+        bool,
+        typer.Option("--explain", "-e", help="Also print explanations."),
+    ] = False,
+) -> None:
+    """Generate one diagram per markdown requirement file in a folder.
+
+    Each .md file's content becomes the prompt. Output files use the
+    markdown stem as basename (.mmd/.puml/.dot + .md). All diagrams
+    are saved to history.
+    """
+    engine = DiagramEngine(Settings.load())
+
+    if output is None:
+        output = engine.settings.output_dir / "bulk"
+
+    try:
+        diagrams = engine.bulk_generate(
+            input_dir=input_dir,
+            output_dir=output,
+            diagram_type=diagram_type,
+            output_format=output_format,
+        )
+        typer.secho(
+            f"✅ Generated {len(diagrams)} diagrams from {input_dir}",
+            fg=typer.colors.GREEN,
+            bold=True,
+        )
+        for diagram in diagrams:
+            typer.echo(f"• {diagram.title} ({diagram.id}_v{diagram.version})")
+        if explain:
+            for diagram in diagrams:
+                expl = engine.explain(diagram)
+                typer.secho(f"\nExplanation for {diagram.title}", fg=typer.colors.BRIGHT_BLUE)
+                typer.echo(expl)
+        typer.secho(f"\nFiles written to {output}", fg=typer.colors.CYAN)
+        typer.echo(
+            "\n[italic]Tip: use [bold]diatype serve[/bold] for the notebook UI[/italic]"
+        )
     except Exception as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc

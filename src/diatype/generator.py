@@ -34,6 +34,7 @@ class DiagramEngine:
     so the FastAPI layer and CLI stay thin and focused on transport.
     History persistence is also handled here using simple JSON files.
     Voice transcription uses faster-whisper (loaded once on first use).
+    The new bulk_generate processes every markdown file in a folder.
     """
 
     def __init__(self, settings: Settings | None = None) -> None:
@@ -312,6 +313,73 @@ class DiagramEngine:
             return text.strip() or "No speech could be recognized."
         finally:
             Path(tmp_path).unlink(missing_ok=True)
+
+    def bulk_generate(
+        self,
+        input_dir: Path,
+        output_dir: Path | None = None,
+        diagram_type: str = "flowchart",
+        output_format: str | None = None,
+    ) -> list[Diagram]:
+        """Process a folder of markdown requirement files and generate one diagram per file.
+
+        Each file's full text is used as the generation prompt. Output files are
+        written to output_dir using the markdown stem as base name. Each diagram
+        receives a deterministic ID, a derived title, is saved to history and
+        written as both source and markdown.
+        """
+        if not isinstance(input_dir, Path) or not input_dir.exists() or not input_dir.is_dir():
+            raise ValueError(f"{input_dir} must be an existing directory containing .md files")
+
+        if output_format is None:
+            output_format = self.settings.default_format
+
+        if output_dir is None:
+            output_dir = self.settings.output_dir / "bulk"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        md_files = sorted(input_dir.glob("*.md"))
+        if not md_files:
+            raise ValueError(f"No *.md files found in {input_dir}")
+
+        diagrams: list[Diagram] = []
+        for md_path in md_files:
+            prompt = md_path.read_text(encoding="utf-8").strip()
+            if len(prompt) < 8:
+                print(f"Warning: skipping {md_path} (prompt too short)")
+                continue
+
+            base_name = md_path.stem
+            try:
+                diagram = self.generate(
+                    prompt=prompt,
+                    diagram_type=diagram_type,
+                    output_format=output_format,
+                )
+                # Customise for bulk context
+                diagram.title = " ".join(
+                    word.capitalize() for word in base_name.replace("-", " ").replace("_", " ").split()
+                )
+                diagram.id = f"bulk_{base_name}"
+                diagram.original_prompt = f"BULK from {md_path.name}: {prompt[:80]}..."
+
+                self.save_to_history(diagram)
+
+                ext = { "mermaid": ".mmd", "plantuml": ".puml", "graphviz": ".dot" }.get(
+                    output_format, ".mmd"
+                )
+                (output_dir / f"{base_name}{ext}").write_text(diagram.source, encoding="utf-8")
+                (output_dir / f"{base_name}.md").write_text(diagram.to_markdown(), encoding="utf-8")
+
+                diagrams.append(diagram)
+            except Exception as exc:  # pylint: disable=broad-except
+                print(f"Warning: failed to generate diagram for {md_path}: {exc}")
+                continue
+
+        if not diagrams:
+            raise RuntimeError("No diagrams could be generated from the supplied requirement files")
+
+        return diagrams
 
     def _parse_llm_response(
         self,
