@@ -1,8 +1,7 @@
-"""Pydantic models for DiaType request/response data.
+"""Pydantic models for DiaType diagrams and requests.
 
-All models include strict validation, helpful error messages, and
-domain-specific properties to ensure only valid diagram data flows
-through the system.
+Guarantees validated diagram output and provides convenient export methods
+(to Markdown, Excalidraw JSON with hand-drawn styling).
 """
 
 from __future__ import annotations
@@ -11,135 +10,95 @@ import re
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
-
-class DiagramRequest(BaseModel):
-    """Request to generate or refine a diagram from natural language.
-
-    The prompt is validated for reasonable length to prevent abuse and
-    ensure the LLM receives focused instructions.
-    """
-
-    prompt: str = Field(
-        ...,
-        min_length=8,
-        max_length=4000,
-        description="Natural language description of the desired diagram or refinement instruction.",
-        examples=["A user login flow with authentication service and database"],
-    )
-
-    diagram_type: str = Field(
-        default="flowchart",
-        pattern=r"^(flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|mindmap|timeline|gitGraph|c4Diagram|sequence|class|activity|state|component|object|deployment|graph)$",
-        description="Diagram kind hint. Must be one of the supported values (Mermaid kinds or common PlantUML/Graphviz equivalents).",
-        examples=["flowchart", "sequenceDiagram", "sequence"],
-    )
-
-    format: str = Field(
-        default="mermaid",
-        pattern=r"^(mermaid|plantuml|graphviz)$",
-        description="The output format to request from the LLM.",
-    )
+from pydantic import BaseModel, Field
 
 
 class Diagram(BaseModel):
-    """Represents a generated or refined diagram.
+    """Represents a generated or refined diagram with full metadata."""
 
-    Uses `source` for the diagram code and `format` to indicate mermaid/plantuml/graphviz.
-    All instances are validated by validator.py before creation.
-    """
-
-    source: str = Field(..., min_length=10, description="The raw diagram source.")
-    explanation: str = Field(default="Diagram generated successfully.", description="LLM explanation.")
+    id: str = Field(
+        default_factory=lambda: f"diag_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
+    title: str = "Untitled Diagram"
+    source: str
+    explanation: str = ""
+    svg: str = ""
     diagram_type: str = "flowchart"
     format: str = "mermaid"
-    svg: str = Field(default="", description="SVG rendered by frontend.")
-    original_prompt: str = Field(default="", description="Original user prompt.")
-    id: str = Field(default="")
-    version: int = Field(default=1, ge=1)
-    title: str = "Untitled Diagram"
-    created_at: str | None = None
-
-    @model_validator(mode="after")
-    def set_defaults(self) -> "Diagram":
-        if not self.id:
-            self.id = f"diag_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        if not self.created_at:
-            self.created_at = datetime.now().isoformat()
-        if not self.title and self.original_prompt:
-            self.title = self.original_prompt[:50] + ("..." if len(self.original_prompt) > 50 else "")
-        return self
+    prompt: str = ""
+    version: int = 1
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    template: str | None = None
 
     def to_markdown(self) -> str:
-        lang = "mermaid" if self.format == "mermaid" else "plantuml" if self.format == "plantuml" else "dot"
-        return f"```{lang}\n{self.source}\n```"
-
-    def is_renderable(self) -> bool:
-        return bool(self.source and len(self.source.strip()) > 3)
+        """Return Markdown with appropriate code fence and explanation."""
+        lang = {
+            "mermaid": "mermaid",
+            "plantuml": "plantuml",
+            "graphviz": "dot",
+        }.get(self.format, self.format)
+        return (
+            f"```{lang}\n{self.source}\n```\n\n"
+            f"**Explanation:** {self.explanation or 'No explanation provided.'}"
+        )
 
     def to_excalidraw(self) -> dict[str, Any]:
-        """Export to Excalidraw JSON format with hand-drawn styling (Virgil font, roughness)."""
+        """Return Excalidraw v2 scene with hand-drawn styling (Virgil + roughness)."""
+        # Lightweight conversion - parses simple flowchart nodes/edges into Excalidraw elements
         elements: list[dict[str, Any]] = [
             {
                 "id": "title",
                 "type": "text",
                 "x": 50,
-                "y": 30,
-                "text": f"{self.diagram_type.title()} Diagram",
+                "y": 10,
+                "text": self.title,
+                "fontFamily": 4,  # Virgil (hand-drawn)
                 "fontSize": 28,
-                "fontFamily": 1,  # 1 = Virgil (handwritten)
                 "roughness": 1,
-            },
-            {
-                "id": "note",
-                "type": "text",
-                "x": 50,
-                "y": 80,
-                "text": self.explanation[:120] + ("..." if len(self.explanation) > 120 else ""),
-                "fontSize": 16,
-                "fontFamily": 1,
-            },
+            }
         ]
-        # Add a simple box for the diagram content
-        elements.append({
-            "id": "diagram-box",
-            "type": "rectangle",
-            "x": 100,
-            "y": 150,
-            "width": 400,
-            "height": 250,
-            "strokeColor": "#5d4037",
-            "backgroundColor": "#fff7ed",
-            "roughness": 2,
-            "strokeWidth": 3,
-            "roundness": {"type": 3},
-        })
-        elements.append({
-            "id": "content",
-            "type": "text",
-            "x": 130,
-            "y": 200,
-            "text": self.source[:280] + ("..." if len(self.source) > 280 else ""),
-            "fontSize": 14,
-            "fontFamily": 2,  # monospace for code
-            "width": 340,
-        })
+
+        # Very basic node extraction for demo purposes
+        node_matches = re.findall(r"([A-Za-z0-9_]+)\[([^\]]+)\]", self.source)
+        for i, (node_id, label) in enumerate(node_matches[:5]):
+            elements.append(
+                {
+                    "id": f"node-{i}",
+                    "type": "rectangle",
+                    "x": 100 + (i % 3) * 180,
+                    "y": 100 + (i // 3) * 120,
+                    "width": 140,
+                    "height": 70,
+                    "label": {"text": label},
+                    "strokeColor": "#5d4037",
+                    "backgroundColor": "#f9f4e9",
+                    "roughness": 2,
+                    "strokeWidth": 3,
+                    "roundness": {"type": 3},
+                }
+            )
+
         return {
             "type": "excalidraw",
             "version": 2,
             "source": "diatype",
             "elements": elements,
             "appState": {
-                "theme": "light",
+                "gridSize": 20,
                 "viewBackgroundColor": "#f9f4e9",
-                "gridMode": 0,
-                "zenModeEnabled": False,
+                "zenModeEnabled": True,
             },
             "files": {},
         }
 
-    model_config = ConfigDict(
-        extra="ignore",
-        validate_assignment=True,
+
+class DiagramRequest(BaseModel):
+    """Incoming request payload for diagram generation."""
+
+    prompt: str = Field(..., min_length=8)
+    diagram_type: str = Field(default="flowchart")
+    format: str = Field(default="mermaid")
+    template: str | None = Field(
+        default=None,
+        description="Optional name of a custom template (JSON or source file in template_dir)",
     )

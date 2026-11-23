@@ -72,7 +72,7 @@ Export as SVG, PNG, PDF, Markdown or Excalidraw JSON (sketchy hand-drawn style)
 <td align="center" valign="top" width="33%">
 🧩<br>
 <b>Template Gallery</b><br>
-Start from common patterns (architecture, user flows, sequence diagrams)
+Start from common patterns (architecture, user flows, sequence diagrams) or your own custom user-defined templates (JSON definitions with base diagrams)
 </td>
 </tr>
 <tr>
@@ -156,6 +156,13 @@ print("\nPlantUML:\n", puml.to_markdown())
 with open("login_flow.excalidraw", "w") as f:
     json.dump(diagram.to_excalidraw(), f, indent=2)
 
+# Custom template support
+template_diag = engine.generate(
+    "add authentication and caching layers",
+    template="web_app"
+)
+print("\nFrom template:\n", template_diag.to_markdown())
+
 # History is automatically maintained
 print("\n--- Recent history entries ---")
 for entry in engine.list_history(limit=5):
@@ -188,6 +195,27 @@ diatype generate "microservice architecture with API gateway, auth and payment s
 # PlantUML or Graphviz via dedicated prompts
 diatype generate "user login sequence" --type sequence --format plantuml --output diagrams/login
 diatype generate "dependency graph of services" --type graph --format graphviz --output diagrams/deps
+```
+
+**Custom user-defined diagram templates**
+
+Place JSON files in the `diagram_templates/` directory (created automatically). Each file defines a reusable base diagram:
+
+```json
+{
+  "name": "web_app",
+  "description": "Modern web application stack with LR layout",
+  "diagram_type": "flowchart",
+  "format": "mermaid",
+  "base_source": "flowchart LR\n    Browser --> Frontend\n    Frontend --> Backend\n    Backend --> Database"
+}
+```
+
+Then use it via the CLI or Python API. The LLM adapts the base while preserving style and structure.
+
+```bash
+diatype generate "add authentication service between frontend and backend" \
+  --template web_app --format mermaid --output diagrams/auth
 ```
 
 **Bulk generation from a folder of markdown requirement files**
@@ -291,12 +319,15 @@ curl -X POST http://127.0.0.1:8000/api/generate \
   -H "Content-Type: application/json" \
   -d '{"prompt": "sequence of a CI pipeline", "diagram_type": "sequenceDiagram", "format": "mermaid"}'
 
+# List custom templates
+curl http://127.0.0.1:8000/api/templates
+
 # Voice transcription
 curl -X POST http://127.0.0.1:8000/api/transcribe \
   -F "file=@recording.webm"
 ```
 
-The `/api/refine`, `/api/explain`, `/api/transcribe`, `/api/excalidraw`, `/api/history`, `/api/load_version` endpoints are available. All routes are defined in `src/diatype/app.py`.
+The `/api/refine`, `/api/explain`, `/api/transcribe`, `/api/excalidraw`, `/api/history`, `/api/load_version`, `/api/templates` endpoints are available. All routes are defined in `src/diatype/app.py`.
 </details>
 
 ## 🔧 Configuration
@@ -315,6 +346,7 @@ DiaType loads settings from `config.toml` (or falls back to defaults). The `Sett
 | `max_history`         | `30`                     | Maximum history files to retain (oldest pruned first). |
 | `history_dir`         | `diagrams/history`       | Where versioned JSON files are stored. |
 | `whisper_model`       | `base`                   | Whisper model size for voice input (tiny/base/small). Downloaded on first use. |
+| `template_dir`        | `diagram_templates`      | Directory containing user-defined diagram template JSON files (auto-created). |
 
 See `config.example.toml` for a ready-to-copy sample.
 
@@ -341,9 +373,10 @@ flowchart TD
     Diagram -->|SVG/Markdown| Export["Export (SVG/PNG/PDF)"]
     Diagram -->|JSON| Excalidraw["Excalidraw export (sketchy style)"]
     Config["config.py (Settings)"] --> Engine
+    Templates["diagram_templates/*.json"] --> Engine
 ```
 
-`DiagramEngine` orchestrates prompt construction (now using rich few-shot examples per output format for higher first-try accuracy), LLM calls, parsing, validation and refinement. The new `bulk_generate` method iterates over markdown files in a folder, treats each file content as a prompt, calls `generate()` for each, customises IDs/titles, writes per-file outputs (.mmd/.puml/.dot + .md) and saves to history. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2). History uses simple timestamped JSON files with automatic pruning. PlantUML and Graphviz are supported via dedicated system prompts that instruct the LLM to emit the appropriate syntax inside the shared JSON schema (`source` + `explanation`). Voice input is handled by a dedicated `/api/transcribe` endpoint and `DiagramEngine.transcribe()` using faster-whisper. The Obsidian plugin adds a modal-driven interface that calls the same local API and inserts Markdown directly into notes.
+`DiagramEngine` orchestrates prompt construction (now using rich few-shot examples per output format for higher first-try accuracy), LLM calls, parsing, validation and refinement. The new `bulk_generate` method iterates over markdown files in a folder, treats each file content as a prompt, calls `generate()` for each, customises IDs/titles, writes per-file outputs (.mmd/.puml/.dot + .md) and saves to history. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2). History uses simple timestamped JSON files with automatic pruning. PlantUML and Graphviz are supported via dedicated system prompts that instruct the LLM to emit the appropriate syntax inside the shared JSON schema (`source` + `explanation`). Voice input is handled by a dedicated `/api/transcribe` endpoint and `DiagramEngine.transcribe()` using faster-whisper. Custom templates are loaded from `diagram_templates/` (JSON with base_source or plain source files) and incorporated into the prompt when the `template` parameter is supplied. The Obsidian plugin adds a modal-driven interface that calls the same local API and inserts Markdown directly into notes.
 
 ## 📁 Project structure
 
@@ -355,7 +388,7 @@ flowchart TD
 │   ├── __init__.py                # public API: Diagram, DiagramEngine, DiagramRequest
 │   ├── config.py                  # Settings Pydantic model with TOML loader
 │   ├── models.py                  # Diagram & DiagramRequest with validators + to_excalidraw
-│   ├── generator.py               # DiagramEngine (generate, refine, explain, history, transcribe, bulk_generate)
+│   ├── generator.py               # DiagramEngine (generate, refine, explain, history, transcribe, bulk_generate, templates)
 │   ├── validator.py               # validate_source (mermaid/plantuml/graphviz), sanitize, detect_diagram_type
 │   ├── app.py                     # FastAPI routes + Jinja2 notebook UI (now with CORS for Obsidian)
 │   └── cli.py                     # Typer commands: generate, serve, history, bulk, version
@@ -381,7 +414,7 @@ flowchart TD
 pytest
 ```
 
-The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate` (including new PlantUML/Graphviz paths and the improved few-shot system prompts), `refine`, `explain`, the new `transcribe` method (with mocked faster-whisper), prompt validation, fallback JSON/markdown parsing, validator integration for all three formats, error handling, snapshot-style checks for common diagram outputs, the `Diagram.to_excalidraw()` method, the history persistence, listing and loading behaviour, and the new `bulk_generate` method (using temporary directories and mocked LLM responses). Ollama and Whisper calls are fully mocked.
+The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate` (including new PlantUML/Graphviz paths and the improved few-shot system prompts), `refine`, `explain`, the new `transcribe` method (with mocked faster-whisper), prompt validation, fallback JSON/markdown parsing, validator integration for all three formats, error handling, snapshot-style checks for common diagram outputs, the `Diagram.to_excalidraw()` method, the history persistence, listing and loading behaviour, the new `bulk_generate` method (using temporary directories and mocked LLM responses), and the new template support (`list_templates`, `generate(..., template=...)`, JSON and plain-source templates). Ollama and Whisper calls are fully mocked.
 
 ## 📍 Roadmap
 <!-- roadmap:start -->
@@ -393,7 +426,7 @@ The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate` (incl
 - [x] Create Obsidian plugin to insert generated diagrams
 - [x] Improve few-shot prompting for higher first-try accuracy
 - [x] Add bulk generation from a folder of markdown requirement files
-- [ ] Support custom user-defined diagram templates
+- [x] Support custom user-defined diagram templates
 - [ ] Export directly to draw.io XML format
 - [ ] Add WebSocket live collaboration for shared notebooks
 - [ ] Provide browser extension to capture DOM structure and suggest matching diagrams

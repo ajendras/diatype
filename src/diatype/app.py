@@ -65,6 +65,14 @@ async def read_root(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/api/templates")
+async def api_templates(
+    engine: DiagramEngine = Depends(get_engine),
+) -> list[dict[str, Any]]:
+    """Return list of all custom user-defined diagram templates."""
+    return engine.list_templates()
+
+
 @app.post("/api/generate", response_model=Diagram)
 async def api_generate(
     req: DiagramRequest, engine: DiagramEngine = Depends(get_engine)
@@ -75,7 +83,12 @@ async def api_generate(
     A versioned copy is saved to the history directory.
     """
     try:
-        diagram = engine.generate(req.prompt, req.diagram_type)
+        diagram = engine.generate(
+            req.prompt,
+            diagram_type=req.diagram_type,
+            output_format=req.format,
+            template=req.template,
+        )
         return diagram
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

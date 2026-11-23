@@ -80,6 +80,11 @@ class Settings(BaseModel):
         examples=["tiny", "base", "small"],
     )
 
+    template_dir: Path = Field(
+        default=Path("diagram_templates"),
+        description="Directory containing user-defined diagram template JSON files.",
+    )
+
     model_config = ConfigDict(
         extra="ignore",
         validate_assignment=True,
@@ -133,6 +138,12 @@ class Settings(BaseModel):
             except OSError as exc:
                 print(f"Warning: Could not create history directory {settings.history_dir}: {exc}")
 
+        # Ensure template directory exists
+        try:
+            settings.template_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"Warning: Could not create template directory {settings.template_dir}: {exc}")
+
         return settings
 
     def get_ollama_options(self) -> dict[str, Any]:
@@ -150,5 +161,6 @@ class Settings(BaseModel):
             f"default_type={self.default_diagram_type}, "
             f"default_format={self.default_format}, "
             f"whisper={self.whisper_model}, "
-            f"history={self.history_enabled})"
+            f"history={self.history_enabled}, "
+            f"templates={self.template_dir})"
         )

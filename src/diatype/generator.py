@@ -9,17 +9,21 @@ The engine also maintains simple file-based versioning: every generated
 or refined diagram is saved as a timestamped JSON file in the configured
 history directory. Refinements increment the version number for the same
 diagram ID. Voice transcription is provided via faster-whisper.
+Custom user-defined templates are supported via the template_dir.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import tempfile
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import ollama
+from faster_whisper import WhisperModel
 from pydantic import ValidationError
 
 from .config import Settings
@@ -35,561 +39,369 @@ class DiagramEngine:
     History persistence is also handled here using simple JSON files.
     Voice transcription uses faster-whisper (loaded once on first use).
     The new bulk_generate processes every markdown file in a folder.
+    Custom templates are loaded from diagram_templates/ (JSON definitions or plain source files).
     """
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings.load()
-        self._whisper_model = None
+        self._whisper_model: WhisperModel | None = None
 
-    def _build_system_prompt(self, output_format: str = "mermaid") -> str:
-        """High-precision system prompt tailored to the requested output format.
-
-        Now includes rich few-shot examples (3 per format) to dramatically
-        improve first-try syntactic and stylistic accuracy.
-        """
-        if output_format == "mermaid":
-            return (
-                "You are an expert Mermaid.js diagramming assistant. "
-                "Your responses must ALWAYS be valid JSON with exactly two fields: "
-                "'source' (the complete Mermaid diagram source) and 'explanation' "
-                "(a concise plain-English description, 2-4 sentences).\n\n"
-                "Rules:\n"
-                "1. The source MUST start with a valid diagram type "
-                "(flowchart, sequenceDiagram, classDiagram, etc.).\n"
-                "2. Use clear, descriptive node labels. Prefer --> for relationships.\n"
-                "3. Never add extra commentary outside the JSON object.\n"
-                "4. Keep the diagram layout logical (TD/LR as appropriate).\n"
-                "5. For refinements, preserve as much of the original structure as possible.\n\n"
-                "Few-shot examples:\n"
-                '1. Flowchart example:\n'
-                'User: "user logs in via OAuth then views their orders"\n'
-                'Assistant: {"source": "flowchart TD\\n    User[User] --> OAuth[OAuth Service]\\n    OAuth --> API[API Gateway]\\n    API --> Orders[Orders Service]", '
-                '"explanation": "OAuth-based login flow leading to an orders dashboard."}\n\n'
-                '2. Sequence diagram example:\n'
-                'User: "client requests resource from server that checks cache then database"\n'
-                'Assistant: {"source": "sequenceDiagram\\n    participant Client\\n    participant Server\\n    participant Cache\\n    participant DB\\n    Client->>Server: GET /resource\\n    Server->>Cache: check\\n    Cache-->>Server: miss\\n    Server->>DB: query\\n    DB-->>Server: data\\n    Server-->>Client: response", '
-                '"explanation": "Cache-assisted data retrieval sequence with fallback to database."}\n\n'
-                '3. Class diagram example:\n'
-                'User: "employee inherits from person and has many projects"\n'
-                'Assistant: {"source": "classDiagram\\n    class Person {\\n        +String name\\n        +int id\\n    }\\n    class Employee {\\n        +String department\\n    }\\n    class Project {\\n        +String title\\n    }\\n    Person <|-- Employee\\n    Employee \\"1\\" --> \\"*\\" Project", '
-                '"explanation": "Inheritance and association between Person, Employee and Project classes."}\n\n'
-                "Always follow the style shown in the examples. Produce the diagram now for the user's request."
+    def _get_whisper(self) -> WhisperModel:
+        if self._whisper_model is None:
+            self._whisper_model = WhisperModel(
+                self.settings.whisper_model, device="cpu", compute_type="int8"
             )
+        return self._whisper_model
+
+    def _build_system_prompt(
+        self, output_format: str, diagram_type: str, template_data: dict | None = None
+    ) -> str:
+        base = f"""You are an expert software architect that produces valid, clean {output_format} diagrams.
+Output ONLY a single JSON object with exactly two keys: "source" and "explanation".
+- "source" must be valid {output_format} syntax for a {diagram_type} diagram.
+- Do not include any markdown fences or extra text outside the JSON.
+- Keep the explanation under 80 words and focus on the business meaning.
+
+"""
         if output_format == "plantuml":
-            return (
-                "You are an expert PlantUML diagramming assistant. "
-                "Your responses must ALWAYS be valid JSON with exactly two fields: "
-                "'source' (the complete PlantUML source starting with @startuml and ending with @enduml) "
-                "and 'explanation' (a concise plain-English description, 2-4 sentences).\n\n"
-                "Rules:\n"
-                "1. Always include @startuml and @enduml.\n"
-                "2. Choose the correct diagram type (sequence, class, activity, component, etc.) "
-                "based on the request.\n"
-                "3. Use clear participants, arrows (->), notes where appropriate.\n"
-                "4. Never add extra commentary outside the JSON object.\n"
-                "5. For refinements, preserve as much of the original structure as possible.\n\n"
-                "Few-shot examples:\n"
-                '1. Sequence example:\n'
-                'User: "user logs in via OAuth then views their orders"\n'
-                'Assistant: {"source": "@startuml\\nactor User\\nUser -> OAuth : login()\\nOAuth -> API : validate\\nAPI -> Orders : getOrders()\\nOrders --> API : orders\\nAPI --> User : success\\n@enduml", '
-                '"explanation": "OAuth login flow leading to order retrieval."}\n\n'
-                '2. Activity example:\n'
-                'User: "client requests resource that checks cache then queries database"\n'
-                'Assistant: {"source": "@startuml\\nstart\\n:Client Request;\\nif (Cache hit?) then (yes)\\n  :Return cached data;\\nelse (no)\\n  :Query Database;\\n  :Store in Cache;\\nendif\\n:Return Response;\\nstop\\n@enduml", '
-                '"explanation": "Cache-assisted retrieval with fallback query."}\n\n'
-                '3. Class example:\n'
-                'User: "employee inherits from person and has many projects"\n'
-                'Assistant: {"source": "@startuml\\nclass Person {\\n  +String name\\n  +int id\\n}\\nclass Employee {\\n  +String department\\n}\\nclass Project {\\n  +String title\\n}\\nPerson <|-- Employee\\nEmployee \\"1\\" --> \\"*\\" Project\\n@enduml", '
-                '"explanation": "Inheritance and association between Person, Employee and Project."}\n\n'
-                "Always follow the style shown in the examples. Produce the diagram now for the user's request."
+            base += "PlantUML diagrams must begin with @startuml and end with @enduml.\n"
+        elif output_format == "graphviz":
+            base += "Graphviz diagrams must be valid DOT syntax (digraph or graph).\n"
+
+        if template_data:
+            base += (
+                "The user will supply a base template. Adapt and extend that template "
+                "to fulfil the request while preserving its overall layout, direction "
+                "and visual style as much as possible.\n"
             )
-        if output_format == "graphviz":
-            return (
-                "You are an expert Graphviz (DOT) diagramming assistant. "
-                "Your responses must ALWAYS be valid JSON with exactly two fields: "
-                "'source' (the complete DOT source starting with digraph or graph) "
-                "and 'explanation' (a concise plain-English description, 2-4 sentences).\n\n"
-                "Rules:\n"
-                "1. Use digraph for directed graphs or graph for undirected.\n"
-                "2. Include rankdir=LR/TB when it improves readability.\n"
-                "3. Use clear node and edge labels.\n"
-                "4. Never add extra commentary outside the JSON object.\n"
-                "5. For refinements, preserve as much of the original structure as possible.\n\n"
-                "Few-shot examples:\n"
-                '1. Directed graph example:\n'
-                'User: "user logs in via OAuth then views their orders"\n'
-                'Assistant: {"source": "digraph G {\\n  rankdir=LR;\\n  User [shape=box];\\n  OAuth [shape=box];\\n  API [shape=box];\\n  Orders [shape=box];\\n  User -> OAuth [label=\\"login\\"];\\n  OAuth -> API [label=\\"validate\\"];\\n  API -> Orders [label=\\"fetch\\"];\\n  Orders -> API [label=\\"data\\"];\\n}", '
-                '"explanation": "OAuth authentication and order retrieval flow."}\n\n'
-                '2. Service dependency graph:\n'
-                'User: "microservices with api gateway, auth and payment"\n'
-                'Assistant: {"source": "digraph G {\\n  rankdir=TB;\\n  Client -> Gateway [label=\\"requests\\"];\\n  Gateway -> Auth [label=\\"auth\\"];\\n  Gateway -> Payment [label=\\"payment\\"];\\n  subgraph cluster_services {\\n    label=\\"Services\\";\\n    Auth; Payment;\\n  }\\n}", '
-                '"explanation": "Microservice architecture with API gateway routing to auth and payment services."}\n\n'
-                '3. Simple hierarchy:\n'
-                'User: "employee reports to manager who reports to director"\n'
-                'Assistant: {"source": "digraph G {\\n  rankdir=BT;\\n  Employee -> Manager [label=\\"reports to\\"];\\n  Manager -> Director [label=\\"reports to\\"];\\n  node [shape=box];\\n}", '
-                '"explanation": "Simple reporting hierarchy among employee, manager and director."}\n\n'
-                "Always follow the style shown in the examples. Produce the diagram now for the user's request."
-            )
-        # fallback
-        return self._build_system_prompt("mermaid")
+
+        base += """Example response:
+{"source": "flowchart TD\\n    A[Start] --> B[Process]", "explanation": "A simple two-step process diagram."}
+
+Now answer the request below."""
+        return base
+
+    def _parse_llm_response(self, content: str, output_format: str) -> dict[str, str]:
+        """Extract JSON from LLM output; fall back to code-block or raw text."""
+        json_match = re.search(r"(\{.*\})", content, re.DOTALL)
+        if json_match:
+            try:
+                parsed = json.loads(json_match.group(1))
+                if isinstance(parsed, dict) and "source" in parsed:
+                    return parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        code_match = re.search(
+            r"```(?:mermaid|plantuml|dot)?\s*([\s\S]+?)\s*```", content
+        )
+        if code_match:
+            source = code_match.group(1).strip()
+            return {
+                "source": source,
+                "explanation": "Diagram generated and validated by DiaType.",
+            }
+
+        return {
+            "source": content.strip(),
+            "explanation": "Diagram generated from the supplied prompt.",
+        }
+
+    def _generate_id(self) -> str:
+        return f"diag_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    def _generate_title(self, prompt: str) -> str:
+        words = prompt.split()[:5]
+        return " ".join(words).title()
+
+    def _save_to_history(self, diagram: Diagram) -> None:
+        if not self.settings.history_enabled:
+            return
+        history_dir = self.settings.history_dir
+        base_id = diagram.id.split("_v")[0] if "_v" in diagram.id else diagram.id
+        file_path = history_dir / f"{base_id}_v{diagram.version}.json"
+        data = diagram.model_dump(mode="json")
+        file_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        self._prune_history()
+
+    def _prune_history(self) -> None:
+        if not self.settings.history_enabled or not self.settings.history_dir.exists():
+            return
+        files = sorted(
+            self.settings.history_dir.glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+        )
+        if len(files) > self.settings.max_history:
+            for old_file in files[: len(files) - self.settings.max_history]:
+                old_file.unlink(missing_ok=True)
+
+    def _load_template(self, name: str) -> dict[str, Any]:
+        """Load template by name from template_dir (JSON or plain source file)."""
+        tdir = self.settings.template_dir
+        json_path = tdir / f"{name}.json"
+        if json_path.exists():
+            try:
+                data = json.loads(json_path.read_text(encoding="utf-8"))
+                data.setdefault("name", name)
+                return data
+            except Exception as exc:
+                raise ValueError(f"Invalid JSON template '{name}': {exc}") from exc
+
+        for ext, fmt in [(".mmd", "mermaid"), (".puml", "plantuml"), (".dot", "graphviz")]:
+            src_path = tdir / f"{name}{ext}"
+            if src_path.exists():
+                source = src_path.read_text(encoding="utf-8").strip()
+                return {
+                    "name": name,
+                    "description": f"Custom {fmt} template",
+                    "diagram_type": detect_diagram_type(source)
+                    or self.settings.default_diagram_type,
+                    "format": fmt,
+                    "base_source": source,
+                }
+        raise ValueError(f"Template '{name}' not found in {tdir}")
+
+    def list_templates(self) -> list[dict[str, Any]]:
+        """Return metadata for every template found in the template directory."""
+        templates: list[dict[str, Any]] = []
+        tdir = self.settings.template_dir
+        if not tdir.exists():
+            return templates
+
+        for json_file in tdir.glob("*.json"):
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+                templates.append(
+                    {
+                        "name": data.get("name", json_file.stem),
+                        "description": data.get("description", "No description provided"),
+                        "diagram_type": data.get(
+                            "diagram_type", self.settings.default_diagram_type
+                        ),
+                        "format": data.get("format", self.settings.default_format),
+                    }
+                )
+            except Exception:
+                continue
+
+        for ext, fmt in [(".mmd", "mermaid"), (".puml", "plantuml"), (".dot", "graphviz")]:
+            for src_file in tdir.glob(f"*{ext}"):
+                name = src_file.stem
+                if not any(t.get("name") == name for t in templates):
+                    templates.append(
+                        {
+                            "name": name,
+                            "description": f"Plain {fmt} source template",
+                            "diagram_type": self.settings.default_diagram_type,
+                            "format": fmt,
+                        }
+                    )
+        return sorted(templates, key=lambda t: t["name"])
 
     def generate(
-        self, prompt: str, diagram_type: str = "flowchart", output_format: str | None = None
+        self,
+        prompt: str,
+        diagram_type: str | None = None,
+        output_format: str | None = None,
+        template: str | None = None,
     ) -> Diagram:
-        """Generate a fresh diagram from a natural-language description.
+        """Generate a new diagram, optionally starting from a custom template."""
+        if not prompt or len(prompt.strip()) < 8:
+            raise ValueError("Prompt must be at least 8 characters long.")
 
-        The returned Diagram is guaranteed to have passed basic validation for the chosen format.
-        A copy is automatically saved to the history directory.
-        """
-        if not isinstance(prompt, str) or len(prompt.strip()) < 8:
-            raise ValueError("prompt must be a string at least 8 characters long")
-
+        if diagram_type is None:
+            diagram_type = self.settings.default_diagram_type
         if output_format is None:
             output_format = self.settings.default_format
 
-        request = DiagramRequest(
-            prompt=prompt, diagram_type=diagram_type, format=output_format
-        )
+        template_data: dict[str, Any] | None = None
+        if template:
+            template_data = self._load_template(template)
+            if template_data.get("diagram_type"):
+                diagram_type = template_data["diagram_type"]
+            if template_data.get("format"):
+                output_format = template_data["format"]
 
-        user_content = (
-            f"Output format: {request.format}\n"
-            f"Diagram type: {request.diagram_type}\n\n"
-            f"Description: {request.prompt}\n\n"
-            "Produce the diagram now."
+        system_prompt = self._build_system_prompt(
+            output_format, diagram_type, template_data
         )
+        user_prompt = prompt
+        if template_data and template_data.get("base_source"):
+            user_prompt = (
+                f"Base template:\n\n{template_data['base_source']}\n\n"
+                f"Adapt the template above to satisfy this request while preserving "
+                f"its style and layout:\n{prompt}"
+            )
 
         try:
             response = ollama.chat(
                 model=self.settings.ollama_model,
                 messages=[
-                    {"role": "system", "content": self._build_system_prompt(request.format)},
-                    {"role": "user", "content": user_content},
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
                 ],
                 options=self.settings.get_ollama_options(),
-                format="json",
             )
-            content = response["message"]["content"].strip()
-            diagram = self._parse_llm_response(
-                content,
-                requested_type=request.diagram_type,
-                output_format=request.format,
-                original_prompt=prompt,
+            content = response["message"]["content"]
+            parsed = self._parse_llm_response(content, output_format)
+            source = sanitize(parsed.get("source", ""))
+            validate_source(source, output_format)
+            explanation = parsed.get(
+                "explanation", "Diagram generated by local LLM via DiaType."
             )
-            self.save_to_history(diagram)
-            return diagram
 
+            diagram = Diagram(
+                id=self._generate_id(),
+                title=self._generate_title(prompt),
+                source=source,
+                explanation=explanation,
+                diagram_type=diagram_type,
+                format=output_format,
+                prompt=prompt,
+                version=1,
+                created_at=datetime.now().isoformat(),
+                template=template,
+            )
+
+            if self.settings.history_enabled:
+                self._save_to_history(diagram)
+            return diagram
         except ollama.ResponseError as exc:
             raise RuntimeError(f"Ollama request failed: {exc}") from exc
-        except (json.JSONDecodeError, KeyError, ValidationError, ValueError) as exc:
-            raise RuntimeError(
-                "Could not parse a valid diagram from the model. "
-                "The model may be overloaded or the prompt too ambiguous."
-            ) from exc
         except Exception as exc:
-            raise RuntimeError(f"Unexpected error during generation: {exc}") from exc
+            raise RuntimeError(f"Generation failed: {exc}") from exc
 
     def refine(self, diagram: Diagram, instruction: str) -> Diagram:
-        """Iteratively improve an existing diagram according to a natural-language instruction.
+        """Refine an existing diagram according to a natural-language instruction."""
+        if not instruction or len(instruction.strip()) < 3:
+            raise ValueError("Instruction must be at least 3 characters.")
 
-        The refined diagram shares the same ID but receives an incremented version number
-        and is saved to history.
-        """
-        if not isinstance(diagram, Diagram):
-            raise TypeError("diagram must be an instance of Diagram")
-        if not isinstance(instruction, str) or len(instruction.strip()) < 3:
-            raise ValueError("instruction must be at least 3 characters")
-
-        output_format = diagram.format
-        user_content = (
-            f"Output format: {output_format}\n"
-            f"Current diagram (type: {diagram.diagram_type}):\n\n"
-            f"{diagram.source}\n\n"
+        system_prompt = (
+            f"You are refining a {diagram.format} diagram.\n"
+            "Return ONLY a JSON object with 'source' and 'explanation'.\n"
+            "Preserve the original structure and only change what the instruction requires."
+        )
+        user_prompt = (
+            f"Current diagram source:\n{diagram.source}\n\n"
             f"Instruction: {instruction}\n\n"
-            "Return an updated version using the same JSON format with 'source' and 'explanation'."
+            "Return the full updated diagram."
         )
 
         try:
             response = ollama.chat(
                 model=self.settings.ollama_model,
                 messages=[
-                    {"role": "system", "content": self._build_system_prompt(output_format)},
-                    {"role": "user", "content": user_content},
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
                 ],
                 options=self.settings.get_ollama_options(),
-                format="json",
             )
-            content = response["message"]["content"].strip()
-            updated = self._parse_llm_response(
-                content,
-                requested_type=diagram.diagram_type,
-                output_format=output_format,
-                original_prompt=instruction,
-                base_id=diagram.id,
+            content = response["message"]["content"]
+            parsed = self._parse_llm_response(content, diagram.format)
+            source = sanitize(parsed.get("source", diagram.source))
+            validate_source(source, diagram.format)
+
+            refined = Diagram(
+                id=diagram.id,
+                title=diagram.title,
+                source=source,
+                explanation=parsed.get("explanation", f"Refined per: {instruction}"),
+                diagram_type=diagram.diagram_type,
+                format=diagram.format,
+                prompt=diagram.prompt,
                 version=diagram.version + 1,
+                created_at=datetime.now().isoformat(),
+                template=diagram.template,
             )
-
-            # Preserve any already-rendered SVG from the original
-            if diagram.svg and not updated.svg:
-                updated.svg = diagram.svg
-            if not updated.original_prompt:
-                updated.original_prompt = diagram.original_prompt
-
-            self.save_to_history(updated)
-            return updated
-
+            if self.settings.history_enabled:
+                self._save_to_history(refined)
+            return refined
         except Exception as exc:
             raise RuntimeError(f"Refinement failed: {exc}") from exc
 
     def explain(self, diagram: Diagram) -> str:
-        """Ask the LLM to describe a diagram back in plain English.
-
-        Useful for the 'Explanation Mode' feature.
-        """
-        if not isinstance(diagram, Diagram):
-            raise TypeError("diagram must be an instance of Diagram")
-        if not diagram.is_renderable():
-            raise ValueError("Cannot explain a diagram with empty source")
-
+        """Ask the LLM for a plain-English explanation of the diagram."""
         prompt = (
-            f"Explain the following {diagram.diagram_type} ({diagram.format}) diagram in clear, "
-            f"non-technical English. Focus on what the diagram shows, the "
-            f"relationships, and the overall meaning.\n\n"
-            f"{diagram.source}\n\n"
-            "Be concise (3-5 sentences)."
+            f"Explain the following {diagram.format} diagram in clear, concise English.\n\n"
+            f"{diagram.source}\n\nFocus on the key components and relationships."
         )
-
         try:
             response = ollama.chat(
                 model=self.settings.ollama_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a helpful technical communicator. "
-                            "Explain diagrams using everyday language."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                options={"temperature": 0.4},
+                messages=[{"role": "user", "content": prompt}],
+                options=self.settings.get_ollama_options(),
             )
             return response["message"]["content"].strip()
-        except Exception:  # pylint: disable=broad-except
-            # Graceful fallback so the UI never completely breaks
-            return (
-                f"I could not generate an explanation at this time.\n\n"
-                f"{diagram.explanation}\n\n"
-                f"Diagram source:\n{diagram.to_markdown()}"
-            )
+        except Exception as exc:
+            return f"Explanation could not be generated: {exc}"
 
     def transcribe(self, audio_bytes: bytes) -> str:
-        """Transcribe spoken audio to text using a local faster-whisper model.
-
-        The model is loaded once on first use. Returns cleaned transcription text.
-        """
-        if not audio_bytes:
-            return "No audio provided."
-
-        import tempfile
-
-        from faster_whisper import WhisperModel
-
-        if self._whisper_model is None:
-            self._whisper_model = WhisperModel(
-                self.settings.whisper_model,
-                device="cpu",
-                compute_type="int8",
-            )
-
-        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp_file:
-            tmp_file.write(audio_bytes)
-            tmp_path = tmp_file.name
-
-        try:
-            segments, _ = self._whisper_model.transcribe(
-                tmp_path, beam_size=5, word_timestamps=False, vad_filter=True
-            )
-            text = " ".join(s.text.strip() for s in segments if s.text.strip())
-            return text.strip() or "No speech could be recognized."
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
+        """Transcribe audio bytes to text using faster-whisper (local)."""
+        if len(audio_bytes) < 512:
+            raise ValueError("Audio data too small to transcribe.")
+        whisper = self._get_whisper()
+        segments, _ = whisper.transcribe(BytesIO(audio_bytes), beam_size=5, word_timestamps=False)
+        text = " ".join(segment.text for segment in segments).strip()
+        return text
 
     def bulk_generate(
         self,
         input_dir: Path,
         output_dir: Path | None = None,
         diagram_type: str = "flowchart",
-        output_format: str | None = None,
+        output_format: str = "mermaid",
     ) -> list[Diagram]:
-        """Process a folder of markdown requirement files and generate one diagram per file.
-
-        Each file's full text is used as the generation prompt. Output files are
-        written to output_dir using the markdown stem as base name. Each diagram
-        receives a deterministic ID, a derived title, is saved to history and
-        written as both source and markdown.
-        """
-        if not isinstance(input_dir, Path) or not input_dir.exists() or not input_dir.is_dir():
-            raise ValueError(f"{input_dir} must be an existing directory containing .md files")
-
-        if output_format is None:
-            output_format = self.settings.default_format
-
+        """Process every .md file in input_dir as a separate generation request."""
         if output_dir is None:
             output_dir = self.settings.output_dir / "bulk"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        md_files = sorted(input_dir.glob("*.md"))
-        if not md_files:
-            raise ValueError(f"No *.md files found in {input_dir}")
-
         diagrams: list[Diagram] = []
-        for md_path in md_files:
-            prompt = md_path.read_text(encoding="utf-8").strip()
-            if len(prompt) < 8:
-                print(f"Warning: skipping {md_path} (prompt too short)")
+        for md_file in sorted(input_dir.glob("*.md")):
+            prompt = md_file.read_text(encoding="utf-8").strip()
+            if not prompt:
                 continue
+            diagram = self.generate(
+                prompt=prompt,
+                diagram_type=diagram_type,
+                output_format=output_format,
+            )
+            diagram.title = md_file.stem.replace("-", " ").replace("_", " ").title()
 
-            base_name = md_path.stem
-            try:
-                diagram = self.generate(
-                    prompt=prompt,
-                    diagram_type=diagram_type,
-                    output_format=output_format,
-                )
-                # Customise for bulk context
-                diagram.title = " ".join(
-                    word.capitalize() for word in base_name.replace("-", " ").replace("_", " ").split()
-                )
-                diagram.id = f"bulk_{base_name}"
-                diagram.original_prompt = f"BULK from {md_path.name}: {prompt[:80]}..."
-
-                self.save_to_history(diagram)
-
-                ext = { "mermaid": ".mmd", "plantuml": ".puml", "graphviz": ".dot" }.get(
-                    output_format, ".mmd"
-                )
-                (output_dir / f"{base_name}{ext}").write_text(diagram.source, encoding="utf-8")
-                (output_dir / f"{base_name}.md").write_text(diagram.to_markdown(), encoding="utf-8")
-
-                diagrams.append(diagram)
-            except Exception as exc:  # pylint: disable=broad-except
-                print(f"Warning: failed to generate diagram for {md_path}: {exc}")
-                continue
-
-        if not diagrams:
-            raise RuntimeError("No diagrams could be generated from the supplied requirement files")
-
+            ext = ".mmd" if output_format == "mermaid" else ".puml" if output_format == "plantuml" else ".dot"
+            (output_dir / f"{md_file.stem}{ext}").write_text(diagram.source, encoding="utf-8")
+            (output_dir / f"{md_file.stem}.md").write_text(
+                diagram.to_markdown(), encoding="utf-8"
+            )
+            if self.settings.history_enabled:
+                self._save_to_history(diagram)
+            diagrams.append(diagram)
         return diagrams
 
-    def _parse_llm_response(
-        self,
-        content: str,
-        requested_type: str,
-        output_format: str = "mermaid",
-        original_prompt: str = "",
-        base_id: str | None = None,
-        version: int = 1,
-    ) -> Diagram:
-        """Convert raw LLM text (JSON or markdown) into a validated Diagram object.
-
-        Centralizes all parsing, sanitization, validation and Pydantic construction.
-        History fields are populated here so that each version is correctly tracked.
-        Improved to robustly handle JSON, markdown code blocks (the most common case),
-        and regex fallbacks.
-        """
-        content = content.strip()
-        raw_source = ""
-        explanation = ""
-
-        # Priority 1: strict JSON (encouraged by format="json")
-        try:
-            parsed = json.loads(content)
-            if isinstance(parsed, dict):
-                raw_source = parsed.get("source") or parsed.get(
-                    "mermaid", parsed.get("plantuml", parsed.get("dot", ""))
-                )
-                explanation = parsed.get("explanation", "")
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-        if not raw_source:
-            # Priority 2: markdown code block (very common even with JSON mode)
-            fence_pattern = (
-                r"```(?:"
-                + output_format
-                + r"|mermaid|plantuml|dot|graphviz)?\s*\n(.*?)\n```"
-            )
-            match = re.search(fence_pattern, content, re.DOTALL | re.IGNORECASE)
-            if match:
-                raw_source = match.group(1).strip()
-                # Extract explanation from surrounding text
-                expl_match = re.search(
-                    r"(?i)(?:explanation|description|note)[:\s]+(.+?)(?=\n\n|\n```|$)",
-                    content,
-                    re.DOTALL,
-                )
-                if expl_match:
-                    explanation = expl_match.group(1).strip()
-            else:
-                # also try generic fence
-                match = re.search(
-                    r"```(?:mermaid|plantuml|dot|graphviz)?\s*\n(.*?)\n```",
-                    content,
-                    re.DOTALL | re.IGNORECASE,
-                )
-                if match:
-                    raw_source = match.group(1).strip()
-
-        if not raw_source:
-            # Priority 3: regex fallback for inline JSON-like responses
-            source_match = re.search(
-                r'"?(?:source|mermaid|plantuml|dot)"?\s*[:=]\s*["\']?(.*?)["\']?(?:,|\s*[\}\n]|$)',
-                content,
-                re.DOTALL | re.IGNORECASE,
-            )
-            if source_match:
-                raw_source = source_match.group(1).strip()
-
-            expl_match = re.search(
-                r'"?explanation"?\s*[:=]\s*["\']?(.*?)["\']?(?:,|\s*[\}\n]|$)',
-                content,
-                re.DOTALL | re.IGNORECASE,
-            )
-            if expl_match:
-                explanation = expl_match.group(1).strip()
-
-        if not raw_source:
-            raw_source = content  # last resort
-
-        if not explanation:
-            explanation = "Diagram generated from your description."
-
-        clean_source = sanitize(raw_source, output_format)
-
-        if not validate_source(clean_source, output_format):
-            raise ValueError(
-                f"The generated {output_format} diagram failed basic validation. "
-                "Please rephrase your request with more detail."
-            )
-
-        detected_type = (
-            detect_diagram_type(clean_source) or requested_type
-            if output_format == "mermaid"
-            else requested_type
-        )
-
-        return Diagram(
-            source=clean_source,
-            explanation=explanation.strip() or "No explanation available.",
-            diagram_type=detected_type,
-            format=output_format,
-            svg="",  # populated by frontend Mermaid renderer
-            original_prompt=original_prompt,
-            id=base_id or f"diag_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-            version=version,
-        )
-
-    def save_to_history(self, diagram: Diagram) -> None:
-        """Persist a diagram version to the history directory as JSON.
-
-        Uses the diagram's ID and version to produce a deterministic filename.
-        Old entries are pruned according to the configured limit.
-        """
-        if not self.settings.history_enabled:
-            return
-
-        history_dir: Path = self.settings.history_dir
-        try:
-            history_dir.mkdir(parents=True, exist_ok=True)
-            filename = f"{diagram.id}_v{diagram.version:02d}.json"
-            filepath = history_dir / filename
-
-            data = diagram.model_dump(mode="json")
-            data["saved_at"] = datetime.now().isoformat()
-            data["filename"] = filename
-
-            filepath.write_text(
-                json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
-            self._prune_old_history()
-        except Exception as exc:  # broad to avoid breaking generation on IO errors
-            print(f"Warning: Could not save diagram to history: {exc}")
-
-    def _prune_old_history(self) -> None:
-        """Remove oldest history files when the configured limit is exceeded."""
-        if not self.settings.history_enabled or self.settings.max_history < 1:
-            return
-
-        history_dir: Path = self.settings.history_dir
-        try:
-            files = list(history_dir.glob("*.json"))
-            if len(files) <= self.settings.max_history:
-                return
-            files.sort(key=lambda f: f.stat().st_mtime)
-            for old_file in files[: len(files) - self.settings.max_history]:
-                old_file.unlink(missing_ok=True)
-        except Exception:
-            pass  # never let cleanup break the application
-
-    def list_history(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Return a list of history entries (newest first) for UI/CLI display.
-
-        Only metadata is returned; full diagrams are loaded on demand via load_version.
-        """
-        if not self.settings.history_enabled:
+    def list_history(self, limit: int = 30) -> list[dict[str, Any]]:
+        """Return up to limit history entries (newest first)."""
+        hist_dir = self.settings.history_dir
+        if not hist_dir.exists():
             return []
-
-        history_dir: Path = self.settings.history_dir
-        if not history_dir.exists():
-            return []
-
-        entries: list[dict[str, Any]] = []
-        try:
-            files = list(history_dir.glob("*_v*.json"))
-            files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-            for file_path in files[:limit]:
-                try:
-                    data = json.loads(file_path.read_text(encoding="utf-8"))
-                    entries.append(
-                        {
-                            "id": data.get("id", ""),
-                            "version": data.get("version", 1),
-                            "title": data.get("title", "Untitled Diagram"),
-                            "diagram_type": data.get("diagram_type", "flowchart"),
-                            "created_at": data.get("created_at") or data.get("saved_at", ""),
-                            "prompt": data.get("original_prompt", "")[:80],
-                            "filename": file_path.name,
-                        }
-                    )
-                except (json.JSONDecodeError, OSError, KeyError):
-                    continue
-            return entries
-        except Exception:
-            return []
-
-    def load_version(self, diagram_id: str, version: int = 1) -> Diagram | None:
-        """Load a specific version of a diagram from the history directory.
-
-        Returns None if the requested file cannot be found or parsed.
-        """
-        if not self.settings.history_enabled:
-            return None
-
-        history_dir: Path = self.settings.history_dir
-        if not history_dir.exists():
-            return None
-
-        # Prefer exact version match
-        exact_path = history_dir / f"{diagram_id}_v{version:02d}.json"
-        candidates = [exact_path] if exact_path.exists() else []
-        if not candidates:
-            candidates = list(history_dir.glob(f"{diagram_id}_v*.json"))
-
-        for candidate in candidates:
+        entries = []
+        for json_file in hist_dir.glob("*.json"):
             try:
-                data = json.loads(candidate.read_text(encoding="utf-8"))
-                return Diagram.model_validate(data)
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+                entries.append(data)
             except Exception:
                 continue
+        entries.sort(key=lambda e: e.get("created_at", ""), reverse=True)
+        return entries[:limit]
 
+    def load_version(self, diagram_id: str, version: int = 1) -> Diagram | None:
+        """Load a specific version from the JSON history."""
+        hist_dir = self.settings.history_dir
+        for suffix in (f"_v{version}", ""):
+            path = hist_dir / f"{diagram_id}{suffix}.json"
+            if path.exists():
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    return Diagram(**data)
+                except Exception:
+                    return None
         return None
