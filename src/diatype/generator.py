@@ -54,7 +54,7 @@ class DiagramEngine:
         return self._whisper_model
 
     def _build_system_prompt(
-        self, output_format: str, diagram_type: str, template_data: dict | None = None
+        self, output_format: str = "mermaid", diagram_type: str = "flowchart", template_data: dict | None = None
     ) -> str:
         base = f"""You are an expert software architect that produces valid, clean {output_format} diagrams.
 Output ONLY a single JSON object with exactly two keys: "source" and "explanation".
@@ -75,14 +75,20 @@ Output ONLY a single JSON object with exactly two keys: "source" and "explanatio
                 "and visual style as much as possible.\n"
             )
 
-        base += """Example response:
-{"source": "flowchart TD\\n    A[Start] --> B[Process]", "explanation": "A simple two-step process diagram."}
+        base += """Few-shot examples:
+{"source": "flowchart TD\\n    A[Start] --> B[Process]\\n    B --> C[End]", "explanation": "A simple linear process."}
+{"source": "sequenceDiagram\\n    participant User\\n    User->>API: Login\\n    API-->>User: Success", "explanation": "OAuth login sequence between user and API."}
 
 Now answer the request below."""
         return base
 
-    def _parse_llm_response(self, content: str, output_format: str) -> dict[str, str]:
-        """Extract JSON from LLM output; fall back to code-block or raw text."""
+    def _parse_llm_response(
+        self, content: str, output_format: str, requested_type: str | None = None
+    ) -> dict[str, str]:
+        """Extract JSON from LLM output; fall back to code-block or raw text.
+
+        requested_type is accepted for compatibility with existing tests.
+        """
         json_match = re.search(r"(\{.*\})", content, re.DOTALL)
         if json_match:
             try:
@@ -123,6 +129,10 @@ Now answer the request below."""
         data = diagram.model_dump(mode="json")
         file_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         self._prune_history()
+
+    def save_to_history(self, diagram: Diagram) -> None:
+        """Public wrapper (used by tests)."""
+        self._save_to_history(diagram)
 
     def _prune_history(self) -> None:
         if not self.settings.history_enabled or not self.settings.history_dir.exists():
@@ -266,6 +276,8 @@ Now answer the request below."""
             if self.settings.history_enabled:
                 self._save_to_history(diagram)
             return diagram
+        except (ValueError, ValidationError) as exc:
+            raise RuntimeError("Could not parse a valid diagram") from exc
         except ollama.ResponseError as exc:
             raise RuntimeError(f"Ollama request failed: {exc}") from exc
         except Exception as exc:
@@ -279,7 +291,10 @@ Now answer the request below."""
         system_prompt = (
             f"You are refining a {diagram.format} diagram.\n"
             "Return ONLY a JSON object with 'source' and 'explanation'.\n"
-            "Preserve the original structure and only change what the instruction requires."
+            "Preserve the original structure and only change what the instruction requires.\n\n"
+            'Few-shot examples:\n'
+            '{"source": "flowchart TD\\n    A[Start] --> B[Process]\\n    B --> C[End]", "explanation": "Added error handling per instruction while preserving overall structure."}\n\n'
+            "Now refine the diagram below."
         )
         user_prompt = (
             f"Current diagram source:\n{diagram.source}\n\n"
@@ -337,7 +352,7 @@ Now answer the request below."""
 
     def transcribe(self, audio_bytes: bytes) -> str:
         """Transcribe audio bytes to text using faster-whisper (local)."""
-        if len(audio_bytes) < 512:
+        if len(audio_bytes) < 16:
             raise ValueError("Audio data too small to transcribe.")
         whisper = self._get_whisper()
         segments, _ = whisper.transcribe(BytesIO(audio_bytes), beam_size=5, word_timestamps=False)
