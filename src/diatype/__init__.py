@@ -3,8 +3,8 @@
 A complete toolkit for generating, refining, and rendering technical diagrams
 entirely offline using Ollama and Mermaid.js. The hand-drawn notebook UI
 makes diagram creation feel like sketching on paper. Now exports to Excalidraw
-JSON with sketchy hand-drawn styling (Virgil font + roughness). Supports
-bulk generation from folders of markdown requirement files.
+JSON with sketchy hand-drawn styling (Virgil font + roughness) and to draw.io
+XML (self-contained file openable in diagrams.net with Mermaid hint).
 """
 
 from .generator import DiagramEngine

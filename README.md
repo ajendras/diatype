@@ -67,7 +67,7 @@ Real-time Mermaid renderer updates as you edit the generated code
 <td align="center" valign="top" width="33%">
 📤<br>
 <b>One-click Export</b><br>
-Export as SVG, PNG, PDF, Markdown or Excalidraw JSON (sketchy hand-drawn style)
+Export as SVG, PNG, PDF, Markdown, Excalidraw JSON or draw.io XML
 </td>
 <td align="center" valign="top" width="33%">
 🧩<br>
@@ -155,6 +155,10 @@ print("\nPlantUML:\n", puml.to_markdown())
 # New: export with sketchy hand-drawn styling for Excalidraw
 with open("login_flow.excalidraw", "w") as f:
     json.dump(diagram.to_excalidraw(), f, indent=2)
+
+# New: direct export to draw.io XML (openable in diagrams.net)
+with open("login_flow.drawio", "w", encoding="utf-8") as f:
+    f.write(diagram.to_drawio())
 
 # Custom template support
 template_diag = engine.generate(
@@ -286,6 +290,15 @@ ex_json = refined.to_excalidraw()
 # Save and open in https://excalidraw.com
 ```
 
+**draw.io export** (native XML for diagrams.net):
+
+```python
+xml = refined.to_drawio()
+with open("refined.drawio", "w", encoding="utf-8") as f:
+    f.write(xml)
+# Open directly in https://app.diagrams.net
+```
+
 **Explanation mode** (useful for documentation):
 
 ```python
@@ -327,7 +340,7 @@ curl -X POST http://127.0.0.1:8000/api/transcribe \
   -F "file=@recording.webm"
 ```
 
-The `/api/refine`, `/api/explain`, `/api/transcribe`, `/api/excalidraw`, `/api/history`, `/api/load_version`, `/api/templates` endpoints are available. All routes are defined in `src/diatype/app.py`.
+The `/api/refine`, `/api/explain`, `/api/transcribe`, `/api/excalidraw`, `/api/drawio`, `/api/history`, `/api/load_version`, `/api/templates` endpoints are available. All routes are defined in `src/diatype/app.py`.
 </details>
 
 ## 🔧 Configuration
@@ -372,11 +385,12 @@ flowchart TD
     Diagram -->|mermaid| Renderer["Mermaid.js (live preview)"]
     Diagram -->|SVG/Markdown| Export["Export (SVG/PNG/PDF)"]
     Diagram -->|JSON| Excalidraw["Excalidraw export (sketchy style)"]
+    Diagram -->|XML| DrawIO["draw.io XML export"]
     Config["config.py (Settings)"] --> Engine
     Templates["diagram_templates/*.json"] --> Engine
 ```
 
-`DiagramEngine` orchestrates prompt construction (now using rich few-shot examples per output format for higher first-try accuracy), LLM calls, parsing, validation and refinement. The new `bulk_generate` method iterates over markdown files in a folder, treats each file content as a prompt, calls `generate()` for each, customises IDs/titles, writes per-file outputs (.mmd/.puml/.dot + .md) and saves to history. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The new `Diagram.to_excalidraw()` performs lightweight flowchart parsing into Excalidraw elements using hand-drawn styling (Virgil font + roughness=2). History uses simple timestamped JSON files with automatic pruning. PlantUML and Graphviz are supported via dedicated system prompts that instruct the LLM to emit the appropriate syntax inside the shared JSON schema (`source` + `explanation`). Voice input is handled by a dedicated `/api/transcribe` endpoint and `DiagramEngine.transcribe()` using faster-whisper. Custom templates are loaded from `diagram_templates/` (JSON with base_source or plain source files) and incorporated into the prompt when the `template` parameter is supplied. The Obsidian plugin adds a modal-driven interface that calls the same local API and inserts Markdown directly into notes.
+`DiagramEngine` orchestrates prompt construction (now using rich few-shot examples per output format for higher first-try accuracy), LLM calls, parsing, validation and refinement. The new `bulk_generate` method iterates over markdown files in a folder, treats each file content as a prompt, calls `generate()` for each, customises IDs/titles, writes per-file outputs (.mmd/.puml/.dot + .md) and saves to history. The FastAPI layer and CLI stay thin, delegating all intelligence to the engine. All generated diagrams are sanitised and validated before leaving the backend. The `Diagram.to_excalidraw()` and `Diagram.to_drawio()` methods provide convenient exports. to_excalidraw() uses a lightweight JSON with hand-drawn styling; to_drawio() produces a ready-to-open XML file containing the source code and a hint for native Mermaid rendering in diagrams.net. History uses simple timestamped JSON files with automatic pruning. PlantUML and Graphviz are supported via dedicated system prompts that instruct the LLM to emit the appropriate syntax inside the shared JSON schema (`source` + `explanation`). Voice input is handled by a dedicated `/api/transcribe` endpoint and `DiagramEngine.transcribe()` using faster-whisper. Custom templates are loaded from `diagram_templates/` (JSON with base_source or plain-source files) and incorporated into the prompt when the `template` parameter is supplied. The Obsidian plugin adds a modal-driven interface that calls the same local API and inserts Markdown directly into notes.
 
 ## 📁 Project structure
 
@@ -387,7 +401,7 @@ flowchart TD
 ├── src/diatype/
 │   ├── __init__.py                # public API: Diagram, DiagramEngine, DiagramRequest
 │   ├── config.py                  # Settings Pydantic model with TOML loader
-│   ├── models.py                  # Diagram & DiagramRequest with validators + to_excalidraw
+│   ├── models.py                  # Diagram & DiagramRequest with validators + to_excalidraw + to_drawio
 │   ├── generator.py               # DiagramEngine (generate, refine, explain, history, transcribe, bulk_generate, templates)
 │   ├── validator.py               # validate_source (mermaid/plantuml/graphviz), sanitize, detect_diagram_type
 │   ├── app.py                     # FastAPI routes + Jinja2 notebook UI (now with CORS for Obsidian)
@@ -427,7 +441,7 @@ The test suite (`tests/test_generator.py`) covers `DiagramEngine.generate` (incl
 - [x] Improve few-shot prompting for higher first-try accuracy
 - [x] Add bulk generation from a folder of markdown requirement files
 - [x] Support custom user-defined diagram templates
-- [ ] Export directly to draw.io XML format
+- [x] Export directly to draw.io XML format
 - [ ] Add WebSocket live collaboration for shared notebooks
 - [ ] Provide browser extension to capture DOM structure and suggest matching diagrams
 - [ ] Create sepia dark notebook theme variant

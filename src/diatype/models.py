@@ -1,7 +1,7 @@
 """Pydantic models for DiaType diagrams and requests.
 
 Guarantees validated diagram output and provides convenient export methods
-(to Markdown, Excalidraw JSON with hand-drawn styling).
+(to Markdown, Excalidraw JSON with hand-drawn styling, and draw.io XML).
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from typing import Any
+from xml.sax.saxutils import escape
 
 from pydantic import BaseModel, Field
 
@@ -92,6 +93,39 @@ class Diagram(BaseModel):
             },
             "files": {},
         }
+
+    def to_drawio(self) -> str:
+        """Return a self-contained draw.io (diagrams.net) XML document.
+
+        The generated XML contains the diagram title and source code in
+        editable text cells. Save as *.drawio and open in app.diagrams.net.
+        The file includes a hint to use the built-in Mermaid renderer for
+        a live preview of the diagram.
+        """
+        escaped_title = escape(self.title)
+        escaped_source = escape(self.source).replace("\n", "&#10;")
+        timestamp = datetime.now().isoformat()
+        return f'''<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="DiaType" modified="{timestamp}" agent="DiaType" version="1.0">
+  <diagram id="diatype-diagram" name="Page-1">
+    <mxGraphModel dx="1420" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="650" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="2" value="{escaped_title}" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontFamily=Helvetica;fontStyle=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="400" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="3" value="{escaped_source}" style="text;html=1;whiteSpace=wrap;overflow=hidden;spacing=4;fontSize=13;fontFamily=Courier New;align=left;verticalAlign=top;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="40" y="70" width="760" height="520" as="geometry" />
+        </mxCell>
+        <mxCell id="4" value="Copy the source above into Insert → Mermaid for live rendering" style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontFamily=Helvetica;strokeColor=none;fillColor=none;fontStyle=2" vertex="1" parent="1">
+          <mxGeometry x="40" y="610" width="760" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
+'''
 
 
 class DiagramRequest(BaseModel):

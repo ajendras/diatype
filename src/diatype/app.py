@@ -1,7 +1,7 @@
 """FastAPI application for the DiaType notebook interface.
 
 Serves the hand-drawn UI, provides JSON endpoints for generation and refinement,
-and mounts static assets (CSS, JS, fonts).
+XML endpoint for draw.io export, and mounts static assets (CSS, JS, fonts).
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
@@ -190,6 +190,34 @@ async def api_excalidraw(request: Request) -> dict[str, Any]:
         return diagram.to_excalidraw()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Excalidraw export failed: {exc}") from exc
+
+
+@app.post("/api/drawio")
+async def api_drawio(request: Request) -> Response:
+    """Return draw.io (diagrams.net) XML that can be saved as a .drawio file.
+
+    Accepts a Diagram payload (or partial JSON) and returns a self-contained
+    XML document with the diagram source in an editable text cell plus a
+    hint for using the native Mermaid renderer inside diagrams.net.
+    """
+    try:
+        payload = await request.json()
+        diagram = Diagram(
+            source=payload.get("source") or payload.get("mermaid", ""),
+            explanation=payload.get("explanation") or "Diagram exported to draw.io XML.",
+            diagram_type=payload.get("diagram_type", "flowchart"),
+            format=payload.get("format", "mermaid"),
+            svg=payload.get("svg", ""),
+            title=payload.get("title", "Untitled Diagram"),
+        )
+        xml_content = diagram.to_drawio()
+        return Response(
+            content=xml_content,
+            media_type="application/xml",
+            headers={"Content-Disposition": 'attachment; filename="diagram.drawio"'},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"draw.io export failed: {exc}") from exc
 
 
 @app.get("/api/history")

@@ -10,6 +10,7 @@ or refined diagram is saved as a timestamped JSON file in the configured
 history directory. Refinements increment the version number for the same
 diagram ID. Voice transcription is provided via faster-whisper.
 Custom user-defined templates are supported via the template_dir.
+Diagram model provides to_drawio() for direct export to diagrams.net XML format.
 """
 
 from __future__ import annotations
