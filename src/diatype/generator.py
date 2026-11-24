@@ -125,7 +125,7 @@ Now answer the request below."""
             return
         history_dir = self.settings.history_dir
         base_id = diagram.id.split("_v")[0] if "_v" in diagram.id else diagram.id
-        file_path = history_dir / f"{base_id}_v{diagram.version}.json"
+        file_path = history_dir / f"{base_id}_v{diagram.version:02d}.json"
         data = diagram.model_dump(mode="json")
         file_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         self._prune_history()
@@ -411,7 +411,7 @@ Now answer the request below."""
     def load_version(self, diagram_id: str, version: int = 1) -> Diagram | None:
         """Load a specific version from the JSON history."""
         hist_dir = self.settings.history_dir
-        for suffix in (f"_v{version}", ""):
+        for suffix in (f"_v{version:02d}", f"_v{version}", ""):
             path = hist_dir / f"{diagram_id}{suffix}.json"
             if path.exists():
                 try:

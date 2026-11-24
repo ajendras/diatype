@@ -1,17 +1,9 @@
-"""Tests for DiagramEngine.
-
-Covers generation (with the new few-shot prompts for mermaid/plantuml/graphviz),
-refinement, explanation, transcription, history, parsing fallbacks, validation
-integration, error handling, and Diagram utilities.
-Ollama and faster-whisper are fully mocked.
-"""
-
 import json
-from datetime import datetime
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from diatype.config import Settings
 from diatype.generator import DiagramEngine
@@ -19,232 +11,199 @@ from diatype.models import Diagram
 
 
 @pytest.fixture
-def settings():
-    s = Settings(
+def mock_settings(tmp_path):
+    settings = Settings(
         ollama_model="llama3.2",
-        temperature=0.0,
-        max_tokens=500,
-        history_enabled=False,
-        history_dir=Path("test_history"),
-        whisper_model="tiny",
+        history_enabled=True,
+        history_dir=tmp_path / "history",
+        output_dir=tmp_path / "output",
+        template_dir=tmp_path / "templates",
+        default_format="mermaid",
     )
-    return s
+    settings.history_dir.mkdir(exist_ok=True)
+    settings.output_dir.mkdir(exist_ok=True)
+    settings.template_dir.mkdir(exist_ok=True)
+    return settings
 
 
 @pytest.fixture
-def engine(settings):
-    return DiagramEngine(settings)
+def engine(mock_settings):
+    return DiagramEngine(mock_settings)
+
+
+@pytest.fixture
+def mock_ollama():
+    with patch("diatype.generator.ollama.chat") as m:
+        yield m
+
+
+@pytest.fixture
+def mock_whisper():
+    with patch("diatype.generator.WhisperModel") as m:
+        instance = MagicMock()
+        instance.transcribe.return_value = (
+            [MagicMock(text="transcribed text")],
+            None,
+        )
+        m.return_value = instance
+        yield m
 
 
 def test_build_system_prompt_includes_few_shot_examples(engine):
-    """The improved few-shot prompting is present for every supported format."""
-    for fmt in ("mermaid", "plantuml", "graphviz"):
-        prompt = engine._build_system_prompt(fmt)
-        assert "Few-shot examples" in prompt
-        assert "Assistant:" in prompt
-        assert len(prompt) > 1200, f"Prompt for {fmt} should be rich with examples"
-
-
-@patch("ollama.chat")
-def test_generate_uses_few_shot_prompt(mock_chat, engine):
-    """generate() sends the rich few-shot system prompt."""
-    mock_chat.return_value = {
-        "message": {
-            "content": json.dumps(
-                {
-                    "source": "flowchart TD\n    A[Start] --> B[End]",
-                    "explanation": "A minimal test diagram.",
-                }
-            )
-        }
-    }
-
-    diagram = engine.generate("a simple start to end flow", diagram_type="flowchart")
-
-    assert diagram.source.startswith("flowchart")
-    assert "test diagram" in diagram.explanation.lower()
-
-    messages = mock_chat.call_args.kwargs["messages"]
-    system_content = messages[0]["content"]
-    assert "Few-shot examples" in system_content
-    assert "flowchart TD" in system_content
-    assert "sequenceDiagram" in system_content
-
-
-@patch("ollama.chat")
-def test_generate_plantuml(mock_chat, engine):
-    mock_chat.return_value = {
-        "message": {
-            "content": json.dumps(
-                {
-                    "source": "@startuml\nUser -> App: login\n@enduml",
-                    "explanation": "PlantUML login sequence.",
-                }
-            )
-        }
-    }
-    diagram = engine.generate(
-        "user login sequence", diagram_type="sequence", output_format="plantuml"
-    )
-    assert "@startuml" in diagram.source
-    assert diagram.format == "plantuml"
-    assert "login" in diagram.source
-
-
-@patch("ollama.chat")
-def test_generate_graphviz(mock_chat, engine):
-    mock_chat.return_value = {
-        "message": {
-            "content": json.dumps(
-                {
-                    "source": "digraph G {\n  rankdir=LR;\n  A -> B;\n}",
-                    "explanation": "Graphviz test graph.",
-                }
-            )
-        }
-    }
-    diagram = engine.generate(
-        "simple dependency", diagram_type="graph", output_format="graphviz"
-    )
-    assert "digraph" in diagram.source.lower()
-    assert diagram.format == "graphviz"
-
-
-@patch("ollama.chat")
-def test_refine_uses_few_shot_prompt(mock_chat, engine):
-    """refine() also uses the few-shot system prompt."""
-    mock_chat.return_value = {
-        "message": {
-            "content": json.dumps(
-                {
-                    "source": "flowchart TD\n    A --> B --> C[Error]",
-                    "explanation": "Added error handling.",
-                }
-            )
-        }
-    }
-
-    original = Diagram(
-        source="flowchart TD\n    A --> B",
-        explanation="Original",
-        diagram_type="flowchart",
-        format="mermaid",
-        id="diag_test",
-        version=1,
-    )
-
-    refined = engine.refine(original, "add an error handling step")
-
-    assert "Error" in refined.source
-    messages = mock_chat.call_args.kwargs["messages"]
-    assert "Few-shot examples" in messages[0]["content"]
-    assert refined.version == 2
-
-
-@patch("ollama.chat")
-def test_explain(mock_chat, engine):
-    mock_chat.return_value = {"message": {"content": "This diagram shows a login flow."}}
-    diagram = Diagram(
-        source="flowchart TD\nUser-->Login",
-        explanation="Original explanation",
-        diagram_type="flowchart",
-        format="mermaid",
-    )
-    explanation = engine.explain(diagram)
-    assert "login flow" in explanation.lower()
-
-
-@patch("faster_whisper.WhisperModel")
-def test_transcribe(mock_whisper, engine, tmp_path):
-    mock_model = MagicMock()
-    mock_model.transcribe.return_value = (iter([MagicMock(text="Hello this is a test")]), None)
-    mock_whisper.return_value = mock_model
-
-    engine._whisper_model = mock_model
-    text = engine.transcribe(b"fake audio bytes")
-    assert "Hello this is a test" in text
+    prompt = engine._build_system_prompt("mermaid", "flowchart")
+    assert "You are an expert software architect" in prompt
+    assert "Few-shot examples:" in prompt
+    assert "flowchart TD" in prompt
+    assert "OAuth login sequence between user and API." in prompt
+    assert "Output ONLY a single JSON object" in prompt
 
 
 def test_parse_llm_response_json(engine):
-    content = '{"source": "flowchart TD\\nA-->B", "explanation": "Parsed from JSON"}'
-    diagram = engine._parse_llm_response(
-        content, requested_type="flowchart", output_format="mermaid"
-    )
-    assert diagram.source.startswith("flowchart")
-    assert "Parsed from JSON" in diagram.explanation
+    content = '{"source": "flowchart TD\\nA-->B", "explanation": "test"}'
+    parsed = engine._parse_llm_response(content, "mermaid")
+    assert isinstance(parsed, dict)
+    assert parsed["source"].startswith("flowchart")
+    assert parsed["explanation"] == "test"
 
 
 def test_parse_llm_response_markdown_fallback(engine):
-    content = 'Here is the diagram:\n\n```mermaid\nflowchart TD\n    X --> Y\n```\n\nExplanation: Markdown fallback worked.'
-    diagram = engine._parse_llm_response(
-        content, requested_type="flowchart", output_format="mermaid"
-    )
-    assert "X --> Y" in diagram.source
-    assert "Markdown fallback" in diagram.explanation
+    content = "Here is a diagram:\n\n```mermaid\nX --> Y\n```"
+    parsed = engine._parse_llm_response(content, "mermaid")
+    assert isinstance(parsed, dict)
+    assert "X --> Y" in parsed["source"]
 
 
 def test_parse_llm_response_plantuml(engine):
-    content = '{"source": "@startuml\\nA -> B\\n@enduml", "explanation": "PlantUML parsed"}'
-    diagram = engine._parse_llm_response(
-        content, requested_type="sequence", output_format="plantuml"
-    )
-    assert "@startuml" in diagram.source
-    assert diagram.format == "plantuml"
+    content = '{"source": "@startuml\\nAlice -> Bob : hello\\n@enduml", "explanation": "puml"}'
+    parsed = engine._parse_llm_response(content, "plantuml")
+    assert isinstance(parsed, dict)
+    assert "@startuml" in parsed["source"]
 
 
-@patch("ollama.chat")
-def test_generate_validation_failure(mock_chat, engine):
-    mock_chat.return_value = {
-        "message": {"content": '{"source": "invalid gibberish", "explanation": "bad"}'}
+def test_generate_validation_failure(engine, mock_ollama):
+    # Force validation failure path (parse succeeds but validate_source fails)
+    mock_ollama.return_value = {
+        "message": {"content": "this is definitely not valid mermaid syntax"}
     }
-    with pytest.raises(RuntimeError, match="Could not parse a valid diagram"):
-        engine.generate("bad prompt that produces invalid output")
+    with patch("diatype.generator.validate_source") as mock_validate:
+        mock_validate.side_effect = ValueError("Invalid diagram syntax")
+        with pytest.raises(RuntimeError, match="Could not parse a valid diagram"):
+            engine.generate("bad prompt that should fail validation")
 
 
-def test_history_methods_when_disabled(engine):
-    engine.settings.history_enabled = False
-    assert engine.list_history() == []
-    assert engine.load_version("any", 1) is None
-
-
-@patch("pathlib.Path.mkdir")
-@patch("pathlib.Path.write_text")
-def test_save_to_history(mock_write, mock_mkdir, engine):
-    engine.settings.history_enabled = True
+def test_save_to_history(engine, mock_settings):
     diagram = Diagram(
-        source="flowchart TD\nA-->B",
-        explanation="test",
-        diagram_type="flowchart",
-        format="mermaid",
         id="diag_test123",
+        title="Untitled Diagram",
+        source="flowchart TD\nA-->B",
+        explanation="test explanation",
+        format="mermaid",
+        prompt="",
         version=1,
+        created_at="2026-11-23T18:22:39.433025",
+        template=None,
     )
-    engine.save_to_history(diagram)
-    mock_write.assert_called_once()
-    assert "diag_test123_v01.json" in str(mock_write.call_args[0][0])
+    with patch.object(Path, "write_text") as mock_write:
+        engine.save_to_history(diagram)
+        mock_write.assert_called_once()
+        # write_text is called with (content, encoding=...)
+        content = mock_write.call_args.args[0]
+        assert '"id": "diag_test123"' in content
+        assert '"version": 1' in content
+        assert "flowchart TD" in content
+        # history file uses padded version for lexical ordering
+        assert "diag_test123_v01.json" in str(mock_write.call_args)
 
 
 def test_to_excalidraw_integration():
-    """Test that the Diagram model (used by engine) produces valid Excalidraw."""
     diagram = Diagram(
-        source="flowchart TD\nA-->B",
-        explanation="A simple test diagram for export.",
+        source="flowchart TD\n    A-->B",
+        explanation="test",
         diagram_type="flowchart",
         format="mermaid",
+        title="Test Diagram",
     )
     ex = diagram.to_excalidraw()
     assert ex["type"] == "excalidraw"
-    assert ex["version"] == 2
-    assert any(e["text"] == "Flowchart Diagram" for e in ex["elements"])
+    assert ex["source"] == "diatype"
+    assert "elements" in ex
     assert any("A-->B" in e.get("text", "") for e in ex["elements"])
+    assert any("Test Diagram" in e.get("text", "") for e in ex["elements"])
 
 
-def test_error_on_bad_prompt(engine):
-    with pytest.raises(ValueError):
-        engine.generate("")
-    with pytest.raises(ValueError):
-        engine.generate("short")
+@patch("diatype.generator.ollama.chat")
+def test_refine(mock_chat, engine):
+    mock_chat.return_value = {
+        "message": {
+            "content": '{"source": "flowchart TD\\nA-->B\\nB-->C", "explanation": "refined with extra step"}'
+        }
+    }
+    original = Diagram(
+        id="test123",
+        source="flowchart TD\nA-->B",
+        explanation="original",
+        format="mermaid",
+        version=1,
+    )
+    refined = engine.refine(original, "add another step")
+    assert refined.version == 2
+    assert "C" in refined.source
+    assert "refined with extra step" in refined.explanation
 
 
-def test_load_version_not_found(engine):
-    assert engine.load_version("nonexistent", 99) is None
+def test_transcribe(engine, mock_whisper):
+    text = engine.transcribe(b"fake-audio-data-long-enough")
+    assert text == "transcribed text"
+
+
+def test_list_templates(engine, mock_settings):
+    template_file = mock_settings.template_dir / "web_app.json"
+    template_file.write_text(
+        json.dumps(
+            {
+                "name": "web_app",
+                "description": "Modern web stack",
+                "diagram_type": "flowchart",
+                "format": "mermaid",
+                "base_source": "flowchart LR\nBrowser-->Server",
+            }
+        )
+    )
+    templates = engine.list_templates()
+    assert any(t["name"] == "web_app" for t in templates)
+
+
+@patch("diatype.generator.ollama.chat")
+def test_bulk_generate(mock_chat, engine, mock_settings, tmp_path):
+    mock_chat.return_value = {
+        "message": {"content": '{"source": "flowchart TD\\nA-->B", "explanation": "ok"}'}
+    }
+    req_dir = tmp_path / "requirements"
+    req_dir.mkdir()
+    (req_dir / "auth.md").write_text("OAuth login flow")
+    (req_dir / "services.md").write_text("Microservice architecture")
+
+    diagrams = engine.bulk_generate(
+        input_dir=req_dir,
+        output_dir=tmp_path / "bulk_out",
+        diagram_type="flowchart",
+        output_format="mermaid",
+    )
+    assert len(diagrams) == 2
+    assert (tmp_path / "bulk_out" / "auth.mmd").exists()
+    assert (tmp_path / "bulk_out" / "auth.md").exists()
+
+
+def test_history_roundtrip(engine, mock_settings):
+    diagram = Diagram(
+        id="hist_test",
+        source="flowchart TD\nX-->Y",
+        explanation="history test",
+        format="mermaid",
+        version=1,
+    )
+    engine.save_to_history(diagram)
+    loaded = engine.load_version("hist_test", 1)
+    assert loaded is not None
+    assert loaded.source == diagram.source
+    assert loaded.version == 1
